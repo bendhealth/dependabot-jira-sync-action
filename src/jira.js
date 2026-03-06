@@ -99,7 +99,7 @@ export function resolvePriority(prioritySetting, severity) {
   if (prioritySetting?.toLowerCase() !== 'auto') {
     return prioritySetting || null
   }
-  return SEVERITY_TO_PRIORITY[severity] || null
+  return SEVERITY_TO_PRIORITY[severity?.toLowerCase()] ?? null
 }
 
 /**
