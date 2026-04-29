@@ -326,3 +326,4 @@ $RECYCLE.BIN/
 # the above line is passed to gitignore.io; add anything custom below, then execute .gitignore.sh
 .cev.json
 release*
+/.agent-shell/
