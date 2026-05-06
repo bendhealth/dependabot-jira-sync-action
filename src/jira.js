@@ -727,7 +727,7 @@ export function extractAlertIdFromIssue(issue) {
   }
 
   // Try to extract from description: "Alert ID: 123"
-  const descriptionMatch = description?.match(/Alert ID:\s*(\d+)/)
+  const descriptionMatch = JSON.stringify(description)?.match(/Alert ID:\s*(\d+)/)
   if (descriptionMatch) {
     return descriptionMatch[1]
   }
