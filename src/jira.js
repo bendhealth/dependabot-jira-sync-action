@@ -670,18 +670,43 @@ export async function updateJiraIssue(
  * Find all open Dependabot issues in a Jira project
  * @param {Object} jiraClient - Axios instance for Jira API
  * @param {string} projectKey - Jira project key
+ * @param {string} labels - Comma-separated list of labels (e.g., "dependabot,security")
  * @returns {Promise<Array>} Array of open Dependabot issues
  */
-export async function findOpenDependabotIssues(jiraClient, projectKey) {
+export async function findOpenDependabotIssues(jiraClient, projectKey, labels) {
   // Validate inputs
   if (!validateProjectKey(projectKey)) {
     throw new Error(`Invalid project key format: ${projectKey}`)
   }
 
   const sanitizedProjectKey = sanitizeForJQL(projectKey)
-  const jql = `project = "${sanitizedProjectKey}" AND labels = "dependabot" AND resolution IS EMPTY`
+
+  // Build label filter from configured labels
+  // Parse comma-separated labels and create JQL conditions
+  const labelArray = labels
+    ? labels
+        .split(',')
+        .map((label) => label.trim())
+        .filter((label) => label.length > 0)
+    : []
+
+  // Build JQL query with label conditions
+  // Use AND to match issues that have all configured labels
+  let jql = `project = "${sanitizedProjectKey}"`
+
+  if (labelArray.length > 0) {
+    const labelConditions = labelArray
+      .map((label) => `labels = "${sanitizeForJQL(label)}"`)
+      .join(' AND ')
+    jql += ` AND ${labelConditions}`
+  }
+
+  // "resolution IS EMPTY" finds issues that are not resolved/closed/done
+  // This works across different Jira workflows regardless of status names
+  jql += ' AND resolution IS EMPTY'
 
   core.info(`Searching for open Dependabot issues in project ${projectKey}`)
+  core.debug(`Using JQL: ${jql}`)
 
   try {
     const response = await jiraClient.get('/search/jql', {
@@ -727,7 +752,8 @@ export function extractAlertIdFromIssue(issue) {
   }
 
   // Try to extract from description: "Alert ID: 123"
-  const descriptionMatch = JSON.stringify(description)?.match(/Alert ID:\s*(\d+)/)
+  const descriptionMatch =
+    JSON.stringify(description)?.match(/Alert ID:\s*(\d+)/)
   if (descriptionMatch) {
     return descriptionMatch[1]
   }

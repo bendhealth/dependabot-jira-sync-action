@@ -597,7 +597,7 @@ describe('Jira API Functions', () => {
   })
 
   describe('findOpenDependabotIssues', () => {
-    it('should find open Dependabot issues', async () => {
+    it('should find open Dependabot issues with single label', async () => {
       const mockResponse = {
         data: {
           issues: [
@@ -605,40 +605,40 @@ describe('Jira API Functions', () => {
               key: 'SEC-123',
               summary: 'Dependabot Alert #42: Critical vulnerability',
               description: {
-		'type': 'doc',
-		'version': 1,
-		'content': [
-		  {
-		    'type': 'paragraph',
-		    'content': [
-		      {
-			'type': 'text',
-			'text': 'Alert description'
-		      }
-		    ]
-		  }
-		]
-	      },
+                type: 'doc',
+                version: 1,
+                content: [
+                  {
+                    type: 'paragraph',
+                    content: [
+                      {
+                        type: 'text',
+                        text: 'Alert description'
+                      }
+                    ]
+                  }
+                ]
+              },
               status: { name: 'Open' }
             },
             {
               key: 'SEC-124',
               summary: 'Dependabot Alert #43: High vulnerability',
               description: {
-		'type': 'doc',
-		'version': 1,
-		'content': [
-		  {
-		    'type': 'paragraph',
-		    'content': [
-		      {
-			'type': 'text',
-			'text': 'Another alert'
-		      }
-		    ]
-		  }
-		]
-	      },
+                type: 'doc',
+                version: 1,
+                content: [
+                  {
+                    type: 'paragraph',
+                    content: [
+                      {
+                        type: 'text',
+                        text: 'Another alert'
+                      }
+                    ]
+                  }
+                ]
+              },
               status: { name: 'In Progress' }
             }
           ]
@@ -647,7 +647,11 @@ describe('Jira API Functions', () => {
 
       mockAxiosInstance.get.mockResolvedValue(mockResponse)
 
-      const result = await findOpenDependabotIssues(mockAxiosInstance, 'SEC')
+      const result = await findOpenDependabotIssues(
+        mockAxiosInstance,
+        'SEC',
+        'dependabot'
+      )
 
       expect(mockAxiosInstance.get).toHaveBeenCalledWith('/search/jql', {
         params: {
@@ -665,16 +669,94 @@ describe('Jira API Functions', () => {
       )
     })
 
+    it('should find open Dependabot issues with multiple labels', async () => {
+      const mockResponse = {
+        data: {
+          issues: [
+            {
+              key: 'SEC-125',
+              summary: 'Dependabot Alert #44: Medium vulnerability',
+              description: {
+                type: 'doc',
+                version: 1,
+                content: []
+              },
+              status: { name: 'Open' }
+            }
+          ]
+        }
+      }
+
+      mockAxiosInstance.get.mockResolvedValue(mockResponse)
+
+      const result = await findOpenDependabotIssues(
+        mockAxiosInstance,
+        'SEC',
+        'dependabot,security,automated'
+      )
+
+      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/search/jql', {
+        params: {
+          jql: 'project = "SEC" AND labels = "dependabot" AND labels = "security" AND labels = "automated" AND resolution IS EMPTY',
+          fields: 'key,summary,description,status',
+          maxResults: 100
+        }
+      })
+
+      expect(result).toHaveLength(1)
+      expect(result[0].key).toBe('SEC-125')
+    })
+
+    it('should handle labels with extra whitespace', async () => {
+      mockAxiosInstance.get.mockResolvedValue({ data: { issues: [] } })
+
+      await findOpenDependabotIssues(
+        mockAxiosInstance,
+        'SEC',
+        '  dependabot  ,  security  '
+      )
+
+      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/search/jql', {
+        params: {
+          jql: 'project = "SEC" AND labels = "dependabot" AND labels = "security" AND resolution IS EMPTY',
+          fields: 'key,summary,description,status',
+          maxResults: 100
+        }
+      })
+    })
+
+    it('should handle empty labels string', async () => {
+      mockAxiosInstance.get.mockResolvedValue({ data: { issues: [] } })
+
+      await findOpenDependabotIssues(mockAxiosInstance, 'SEC', '')
+
+      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/search/jql', {
+        params: {
+          jql: 'project = "SEC" AND resolution IS EMPTY',
+          fields: 'key,summary,description,status',
+          maxResults: 100
+        }
+      })
+    })
+
     it('should reject invalid project keys', async () => {
       await expect(
-        findOpenDependabotIssues(mockAxiosInstance, 'SEC"; OR 1=1; --')
+        findOpenDependabotIssues(
+          mockAxiosInstance,
+          'SEC"; OR 1=1; --',
+          'dependabot'
+        )
       ).rejects.toThrow('Invalid project key format')
     })
 
     it('should handle empty search results', async () => {
       mockAxiosInstance.get.mockResolvedValue({ data: { issues: [] } })
 
-      const result = await findOpenDependabotIssues(mockAxiosInstance, 'SEC')
+      const result = await findOpenDependabotIssues(
+        mockAxiosInstance,
+        'SEC',
+        'dependabot'
+      )
 
       expect(result).toHaveLength(0)
       expect(mockCore.info).toHaveBeenCalledWith(
@@ -687,7 +769,7 @@ describe('Jira API Functions', () => {
       mockAxiosInstance.get.mockRejectedValue(searchError)
 
       await expect(
-        findOpenDependabotIssues(mockAxiosInstance, 'SEC')
+        findOpenDependabotIssues(mockAxiosInstance, 'SEC', 'dependabot')
       ).rejects.toThrow('JQL syntax error')
       expect(mockCore.error).toHaveBeenCalledWith(
         'Failed to search for open Dependabot issues: JQL syntax error'
@@ -701,20 +783,20 @@ describe('Jira API Functions', () => {
         key: 'SEC-123',
         summary: 'Dependabot Alert #42: Critical vulnerability in lodash',
         description: {
-	  'type': 'doc',
-	  'version': 1,
-	  'content': [
-	    {
-	      'type': 'paragraph',
-	      'content': [
-		{
-		  'type': 'text',
-		  'text': 'Some description'
-		}
-	      ]
-	    }
-	  ]
-	}
+          type: 'doc',
+          version: 1,
+          content: [
+            {
+              type: 'paragraph',
+              content: [
+                {
+                  type: 'text',
+                  text: 'Some description'
+                }
+              ]
+            }
+          ]
+        }
       }
 
       const result = extractAlertIdFromIssue(issue)
@@ -727,20 +809,20 @@ describe('Jira API Functions', () => {
         key: 'SEC-123',
         summary: 'Security Issue: lodash vulnerability',
         description: {
-	  'type': 'doc',
-	  'version': 1,
-	  'content': [
-	    {
-	      'type': 'paragraph',
-	      'content': [
-		{
-		  'type': 'text',
-		  'text': 'Alert ID: 123\nThis is a security vulnerability...'
-		}
-	      ]
-	    }
-	  ]
-	}
+          type: 'doc',
+          version: 1,
+          content: [
+            {
+              type: 'paragraph',
+              content: [
+                {
+                  type: 'text',
+                  text: 'Alert ID: 123\nThis is a security vulnerability...'
+                }
+              ]
+            }
+          ]
+        }
       }
 
       const result = extractAlertIdFromIssue(issue)
@@ -753,20 +835,20 @@ describe('Jira API Functions', () => {
         key: 'SEC-123',
         summary: 'Dependabot Alert #42: Critical vulnerability',
         description: {
-	  'type': 'doc',
-	  'version': 1,
-	  'content': [
-	    {
-	      'type': 'paragraph',
-	      'content': [
-		{
-		  'type': 'text',
-		  'text': 'Alert ID: 999\nThis should not be used'
-		}
-	      ]
-	    }
-	  ]
-	}
+          type: 'doc',
+          version: 1,
+          content: [
+            {
+              type: 'paragraph',
+              content: [
+                {
+                  type: 'text',
+                  text: 'Alert ID: 999\nThis should not be used'
+                }
+              ]
+            }
+          ]
+        }
       }
 
       const result = extractAlertIdFromIssue(issue)
@@ -779,20 +861,20 @@ describe('Jira API Functions', () => {
         key: 'SEC-123',
         summary: 'Manual security issue',
         description: {
-	  'type': 'doc',
-	  'version': 1,
-	  'content': [
-	    {
-	      'type': 'paragraph',
-	      'content': [
-		{
-		  'type': 'text',
-		  'text': 'This is not a Dependabot alert'
-		}
-	      ]
-	    }
-	  ]
-	}
+          type: 'doc',
+          version: 1,
+          content: [
+            {
+              type: 'paragraph',
+              content: [
+                {
+                  type: 'text',
+                  text: 'This is not a Dependabot alert'
+                }
+              ]
+            }
+          ]
+        }
       }
 
       const result = extractAlertIdFromIssue(issue)

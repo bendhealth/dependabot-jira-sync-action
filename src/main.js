@@ -207,7 +207,8 @@ export async function run() {
         // Find all open Dependabot issues in Jira
         const openIssues = await findOpenDependabotIssues(
           jiraClient,
-          config.jira.projectKey
+          config.jira.projectKey,
+          config.jira.labels
         )
 
         for (const issue of openIssues) {
