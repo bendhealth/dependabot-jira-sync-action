@@ -604,13 +604,41 @@ describe('Jira API Functions', () => {
             {
               key: 'SEC-123',
               summary: 'Dependabot Alert #42: Critical vulnerability',
-              description: 'Alert description',
+              description: {
+		'type': 'doc',
+		'version': 1,
+		'content': [
+		  {
+		    'type': 'paragraph',
+		    'content': [
+		      {
+			'type': 'text',
+			'text': 'Alert description'
+		      }
+		    ]
+		  }
+		]
+	      },
               status: { name: 'Open' }
             },
             {
               key: 'SEC-124',
               summary: 'Dependabot Alert #43: High vulnerability',
-              description: 'Another alert',
+              description: {
+		'type': 'doc',
+		'version': 1,
+		'content': [
+		  {
+		    'type': 'paragraph',
+		    'content': [
+		      {
+			'type': 'text',
+			'text': 'Another alert'
+		      }
+		    ]
+		  }
+		]
+	      },
               status: { name: 'In Progress' }
             }
           ]
@@ -672,7 +700,21 @@ describe('Jira API Functions', () => {
       const issue = {
         key: 'SEC-123',
         summary: 'Dependabot Alert #42: Critical vulnerability in lodash',
-        description: 'Some description'
+        description: {
+	  'type': 'doc',
+	  'version': 1,
+	  'content': [
+	    {
+	      'type': 'paragraph',
+	      'content': [
+		{
+		  'type': 'text',
+		  'text': 'Some description'
+		}
+	      ]
+	    }
+	  ]
+	}
       }
 
       const result = extractAlertIdFromIssue(issue)
@@ -684,7 +726,21 @@ describe('Jira API Functions', () => {
       const issue = {
         key: 'SEC-123',
         summary: 'Security Issue: lodash vulnerability',
-        description: 'Alert ID: 123\nThis is a security vulnerability...'
+        description: {
+	  'type': 'doc',
+	  'version': 1,
+	  'content': [
+	    {
+	      'type': 'paragraph',
+	      'content': [
+		{
+		  'type': 'text',
+		  'text': 'Alert ID: 123\nThis is a security vulnerability...'
+		}
+	      ]
+	    }
+	  ]
+	}
       }
 
       const result = extractAlertIdFromIssue(issue)
@@ -696,7 +752,21 @@ describe('Jira API Functions', () => {
       const issue = {
         key: 'SEC-123',
         summary: 'Dependabot Alert #42: Critical vulnerability',
-        description: 'Alert ID: 999\nThis should not be used'
+        description: {
+	  'type': 'doc',
+	  'version': 1,
+	  'content': [
+	    {
+	      'type': 'paragraph',
+	      'content': [
+		{
+		  'type': 'text',
+		  'text': 'Alert ID: 999\nThis should not be used'
+		}
+	      ]
+	    }
+	  ]
+	}
       }
 
       const result = extractAlertIdFromIssue(issue)
@@ -708,7 +778,21 @@ describe('Jira API Functions', () => {
       const issue = {
         key: 'SEC-123',
         summary: 'Manual security issue',
-        description: 'This is not a Dependabot alert'
+        description: {
+	  'type': 'doc',
+	  'version': 1,
+	  'content': [
+	    {
+	      'type': 'paragraph',
+	      'content': [
+		{
+		  'type': 'text',
+		  'text': 'This is not a Dependabot alert'
+		}
+	      ]
+	    }
+	  ]
+	}
       }
 
       const result = extractAlertIdFromIssue(issue)
