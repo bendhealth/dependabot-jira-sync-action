@@ -35,11 +35,11 @@ const {
   createJiraClient,
   calculateDueDate,
   resolvePriority,
-  findExistingIssue,
   createJiraIssue,
   updateJiraIssue,
-  findOpenDependabotIssues,
-  extractAlertIdFromIssue,
+  findDependabotIssues,
+  extractAlertUrlFromIssue,
+  extractAlertIdFromUrl,
   closeJiraIssue
 } = await import('../src/jira.js')
 
@@ -237,68 +237,6 @@ describe('Jira API Functions', () => {
       expect(resolvePriority('', 'high')).toBeNull()
       expect(resolvePriority(null, 'high')).toBeNull()
       expect(resolvePriority(undefined, 'high')).toBeNull()
-    })
-  })
-
-  describe('findExistingIssue', () => {
-    it('should find existing issue', async () => {
-      const mockResponse = {
-        data: {
-          issues: [
-            {
-              key: 'SEC-123',
-              summary: 'Dependabot Alert #42: Test vulnerability',
-              status: { name: 'Open' },
-              updated: '2023-01-01T00:00:00Z'
-            }
-          ]
-        }
-      }
-
-      mockAxiosInstance.get.mockResolvedValue(mockResponse)
-
-      const result = await findExistingIssue(mockAxiosInstance, 'SEC', 42)
-
-      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/search/jql', {
-        params: {
-          jql: 'project = "SEC" AND summary ~ "Dependabot Alert #42"',
-          fields: 'key,summary,status,updated'
-        }
-      })
-
-      expect(result).toEqual(mockResponse.data.issues[0])
-    })
-
-    it('should reject invalid project keys', async () => {
-      await expect(
-        findExistingIssue(mockAxiosInstance, 'SEC"; DROP TABLE alerts; --', 42)
-      ).rejects.toThrow('Invalid project key format')
-    })
-
-    it('should reject invalid alert IDs', async () => {
-      await expect(
-        findExistingIssue(mockAxiosInstance, 'SEC', 'invalid')
-      ).rejects.toThrow('Invalid alert ID')
-    })
-
-    it('should return null if no issues found', async () => {
-      mockAxiosInstance.get.mockResolvedValue({ data: { issues: [] } })
-
-      const result = await findExistingIssue(mockAxiosInstance, 'SEC', 42)
-
-      expect(result).toBeNull()
-    })
-
-    it('should surface search errors so the workflow fails', async () => {
-      const searchError = new Error('Search failed')
-      mockAxiosInstance.get.mockRejectedValue(searchError)
-
-      await expect(
-        findExistingIssue(mockAxiosInstance, 'SEC', 42)
-      ).rejects.toThrow('Search failed')
-      expect(mockCore.error).toHaveBeenCalledWith(
-        'Failed to search for existing issue: Search failed'
-      )
     })
   })
 
@@ -596,7 +534,7 @@ describe('Jira API Functions', () => {
     })
   })
 
-  describe('findOpenDependabotIssues', () => {
+  describe('findDependabotIssues', () => {
     it('should find open Dependabot issues with single label', async () => {
       const mockResponse = {
         data: {
@@ -647,10 +585,11 @@ describe('Jira API Functions', () => {
 
       mockAxiosInstance.get.mockResolvedValue(mockResponse)
 
-      const result = await findOpenDependabotIssues(
+      const result = await findDependabotIssues(
         mockAxiosInstance,
         'SEC',
-        'dependabot'
+        'dependabot',
+        true // onlyOpen = true
       )
 
       expect(mockAxiosInstance.get).toHaveBeenCalledWith('/search/jql', {
@@ -666,6 +605,59 @@ describe('Jira API Functions', () => {
       expect(result[1].key).toBe('SEC-124')
       expect(mockCore.info).toHaveBeenCalledWith(
         'Found 2 open Dependabot issues'
+      )
+    })
+
+    it('should find all Dependabot issues when onlyOpen is false', async () => {
+      const mockResponse = {
+        data: {
+          issues: [
+            {
+              key: 'SEC-123',
+              summary: 'Dependabot Alert #42: Critical vulnerability',
+              description: {
+                type: 'doc',
+                version: 1,
+                content: []
+              },
+              status: { name: 'Open' }
+            },
+            {
+              key: 'SEC-124',
+              summary: 'Dependabot Alert #43: High vulnerability',
+              description: {
+                type: 'doc',
+                version: 1,
+                content: []
+              },
+              status: { name: 'Done' }
+            }
+          ]
+        }
+      }
+
+      mockAxiosInstance.get.mockResolvedValue(mockResponse)
+
+      const result = await findDependabotIssues(
+        mockAxiosInstance,
+        'SEC',
+        'dependabot',
+        false // onlyOpen = false
+      )
+
+      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/search/jql', {
+        params: {
+          jql: 'project = "SEC" AND labels = "dependabot"',
+          fields: 'key,summary,description,status',
+          maxResults: 100
+        }
+      })
+
+      expect(result).toHaveLength(2)
+      expect(result[0].key).toBe('SEC-123')
+      expect(result[1].key).toBe('SEC-124')
+      expect(mockCore.info).toHaveBeenCalledWith(
+        'Found 2 all Dependabot issues'
       )
     })
 
@@ -689,10 +681,11 @@ describe('Jira API Functions', () => {
 
       mockAxiosInstance.get.mockResolvedValue(mockResponse)
 
-      const result = await findOpenDependabotIssues(
+      const result = await findDependabotIssues(
         mockAxiosInstance,
         'SEC',
-        'dependabot,security,automated'
+        'dependabot,security,automated',
+        true
       )
 
       expect(mockAxiosInstance.get).toHaveBeenCalledWith('/search/jql', {
@@ -710,10 +703,11 @@ describe('Jira API Functions', () => {
     it('should handle labels with extra whitespace', async () => {
       mockAxiosInstance.get.mockResolvedValue({ data: { issues: [] } })
 
-      await findOpenDependabotIssues(
+      await findDependabotIssues(
         mockAxiosInstance,
         'SEC',
-        '  dependabot  ,  security  '
+        '  dependabot  ,  security  ',
+        true
       )
 
       expect(mockAxiosInstance.get).toHaveBeenCalledWith('/search/jql', {
@@ -728,7 +722,7 @@ describe('Jira API Functions', () => {
     it('should handle empty labels string', async () => {
       mockAxiosInstance.get.mockResolvedValue({ data: { issues: [] } })
 
-      await findOpenDependabotIssues(mockAxiosInstance, 'SEC', '')
+      await findDependabotIssues(mockAxiosInstance, 'SEC', '', true)
 
       expect(mockAxiosInstance.get).toHaveBeenCalledWith('/search/jql', {
         params: {
@@ -741,10 +735,11 @@ describe('Jira API Functions', () => {
 
     it('should reject invalid project keys', async () => {
       await expect(
-        findOpenDependabotIssues(
+        findDependabotIssues(
           mockAxiosInstance,
           'SEC"; OR 1=1; --',
-          'dependabot'
+          'dependabot',
+          true
         )
       ).rejects.toThrow('Invalid project key format')
     })
@@ -752,10 +747,11 @@ describe('Jira API Functions', () => {
     it('should handle empty search results', async () => {
       mockAxiosInstance.get.mockResolvedValue({ data: { issues: [] } })
 
-      const result = await findOpenDependabotIssues(
+      const result = await findDependabotIssues(
         mockAxiosInstance,
         'SEC',
-        'dependabot'
+        'dependabot',
+        true
       )
 
       expect(result).toHaveLength(0)
@@ -769,16 +765,16 @@ describe('Jira API Functions', () => {
       mockAxiosInstance.get.mockRejectedValue(searchError)
 
       await expect(
-        findOpenDependabotIssues(mockAxiosInstance, 'SEC', 'dependabot')
+        findDependabotIssues(mockAxiosInstance, 'SEC', 'dependabot', true)
       ).rejects.toThrow('JQL syntax error')
       expect(mockCore.error).toHaveBeenCalledWith(
-        'Failed to search for open Dependabot issues: JQL syntax error'
+        'Failed to search for Dependabot issues: JQL syntax error'
       )
     })
   })
 
-  describe('extractAlertIdFromIssue', () => {
-    it('should extract alert ID from summary', () => {
+  describe('extractAlertUrlFromIssue', () => {
+    it('should extract GitHub alert URL from description', () => {
       const issue = {
         key: 'SEC-123',
         summary: 'Dependabot Alert #42: Critical vulnerability in lodash',
@@ -791,7 +787,20 @@ describe('Jira API Functions', () => {
               content: [
                 {
                   type: 'text',
-                  text: 'Some description'
+                  text: 'GitHub Alert URL: ',
+                  marks: [{ type: 'strong' }]
+                },
+                {
+                  type: 'text',
+                  text: 'https://github.com/owner/repo/security/dependabot/42',
+                  marks: [
+                    {
+                      type: 'link',
+                      attrs: {
+                        href: 'https://github.com/owner/repo/security/dependabot/42'
+                      }
+                    }
+                  ]
                 }
               ]
             }
@@ -799,15 +808,16 @@ describe('Jira API Functions', () => {
         }
       }
 
-      const result = extractAlertIdFromIssue(issue)
+      const result = extractAlertUrlFromIssue(issue)
 
-      expect(result).toBe('42')
+      expect(result).toBe(
+        'https://github.com/owner/repo/security/dependabot/42'
+      )
     })
 
-    it('should extract alert ID from description if not in summary', () => {
+    it('should handle different URL formats', () => {
       const issue = {
-        key: 'SEC-123',
-        summary: 'Security Issue: lodash vulnerability',
+        key: 'SEC-456',
         description: {
           type: 'doc',
           version: 1,
@@ -817,7 +827,7 @@ describe('Jira API Functions', () => {
               content: [
                 {
                   type: 'text',
-                  text: 'Alert ID: 123\nThis is a security vulnerability...'
+                  text: 'https://github.com/my-org/my-repo/security/dependabot/999'
                 }
               ]
             }
@@ -825,38 +835,14 @@ describe('Jira API Functions', () => {
         }
       }
 
-      const result = extractAlertIdFromIssue(issue)
+      const result = extractAlertUrlFromIssue(issue)
 
-      expect(result).toBe('123')
+      expect(result).toBe(
+        'https://github.com/my-org/my-repo/security/dependabot/999'
+      )
     })
 
-    it('should prioritize summary over description', () => {
-      const issue = {
-        key: 'SEC-123',
-        summary: 'Dependabot Alert #42: Critical vulnerability',
-        description: {
-          type: 'doc',
-          version: 1,
-          content: [
-            {
-              type: 'paragraph',
-              content: [
-                {
-                  type: 'text',
-                  text: 'Alert ID: 999\nThis should not be used'
-                }
-              ]
-            }
-          ]
-        }
-      }
-
-      const result = extractAlertIdFromIssue(issue)
-
-      expect(result).toBe('42')
-    })
-
-    it('should return null when no alert ID found', () => {
+    it('should return null when no URL found', () => {
       const issue = {
         key: 'SEC-123',
         summary: 'Manual security issue',
@@ -877,25 +863,50 @@ describe('Jira API Functions', () => {
         }
       }
 
-      const result = extractAlertIdFromIssue(issue)
+      const result = extractAlertUrlFromIssue(issue)
 
       expect(result).toBeNull()
       expect(mockCore.warning).toHaveBeenCalledWith(
-        'Could not extract alert ID from issue SEC-123'
+        'Could not extract GitHub alert URL from issue SEC-123'
       )
     })
 
-    it('should handle missing summary and description', () => {
+    it('should handle missing description', () => {
       const issue = {
         key: 'SEC-123'
       }
 
-      const result = extractAlertIdFromIssue(issue)
+      const result = extractAlertUrlFromIssue(issue)
 
       expect(result).toBeNull()
       expect(mockCore.warning).toHaveBeenCalledWith(
-        'Could not extract alert ID from issue SEC-123'
+        'Could not extract GitHub alert URL from issue SEC-123'
       )
+    })
+  })
+
+  describe('extractAlertIdFromUrl', () => {
+    it('should extract alert ID from GitHub URL', () => {
+      const url = 'https://github.com/owner/repo/security/dependabot/42'
+      const result = extractAlertIdFromUrl(url)
+      expect(result).toBe('42')
+    })
+
+    it('should handle different repo names', () => {
+      const url = 'https://github.com/my-org/my-repo/security/dependabot/999'
+      const result = extractAlertIdFromUrl(url)
+      expect(result).toBe('999')
+    })
+
+    it('should return null for invalid URL', () => {
+      const url = 'https://github.com/owner/repo/issues/123'
+      const result = extractAlertIdFromUrl(url)
+      expect(result).toBeNull()
+    })
+
+    it('should return null for null input', () => {
+      const result = extractAlertIdFromUrl(null)
+      expect(result).toBeNull()
     })
   })
 

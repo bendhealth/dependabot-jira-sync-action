@@ -7,11 +7,11 @@ import {
 } from './github.js'
 import {
   createJiraClient,
-  findExistingIssue,
   createJiraIssue,
   updateJiraIssue,
-  findOpenDependabotIssues,
-  extractAlertIdFromIssue,
+  findDependabotIssues,
+  extractAlertUrlFromIssue,
+  extractAlertIdFromUrl,
   closeJiraIssue
 } from './jira.js'
 
@@ -134,6 +134,29 @@ export async function run() {
       config.jira.apiToken
     )
 
+    // Fetch all existing Dependabot issues once (more efficient than N individual queries)
+    core.info('Fetching existing Dependabot issues from Jira...')
+    const existingIssues = await findDependabotIssues(
+      jiraClient,
+      config.jira.projectKey,
+      config.jira.labels,
+      false // Get all issues (both open and resolved)
+    )
+
+    // Build a lookup map: alertUrl -> Jira issue
+    const issueMap = new Map()
+    for (const issue of existingIssues) {
+      const alertUrl = extractAlertUrlFromIssue(issue)
+      if (alertUrl) {
+        issueMap.set(alertUrl, issue)
+        core.debug(`Mapped alert URL ${alertUrl} to Jira issue ${issue.key}`)
+      }
+    }
+
+    core.info(
+      `Built lookup map with ${issueMap.size} alert-to-issue mappings from ${existingIssues.length} Jira issues`
+    )
+
     let issuesCreated = 0
     let issuesUpdated = 0
     let processingErrors = 0
@@ -147,12 +170,8 @@ export async function run() {
 
         core.info(`Processing alert #${parsedAlert.id}: ${parsedAlert.title}`)
 
-        // Check if issue already exists
-        const existingIssue = await findExistingIssue(
-          jiraClient,
-          config.jira.projectKey,
-          parsedAlert.id
-        )
+        // Check if issue already exists using in-memory lookup by URL
+        const existingIssue = issueMap.get(parsedAlert.url)
 
         if (existingIssue) {
           if (config.behavior.updateExisting) {
@@ -204,19 +223,28 @@ export async function run() {
       core.info('\n🔄 Checking for resolved alerts to auto-close...')
 
       try {
-        // Find all open Dependabot issues in Jira
-        const openIssues = await findOpenDependabotIssues(
+        // Find only open Dependabot issues in Jira
+        const openIssues = await findDependabotIssues(
           jiraClient,
           config.jira.projectKey,
-          config.jira.labels
+          config.jira.labels,
+          true // Only fetch unresolved issues
         )
 
         for (const issue of openIssues) {
           try {
-            // Extract alert ID from the issue
-            const alertId = extractAlertIdFromIssue(issue)
+            // Extract alert URL from the issue, then get the ID from it
+            const alertUrl = extractAlertUrlFromIssue(issue)
+            if (!alertUrl) {
+              continue // Skip if we can't extract alert URL
+            }
+
+            const alertId = extractAlertIdFromUrl(alertUrl)
             if (!alertId) {
-              continue // Skip if we can't extract alert ID
+              core.warning(
+                `Could not extract alert ID from URL ${alertUrl} in issue ${issue.key}`
+              )
+              continue
             }
 
             // Check status of the alert in GitHub

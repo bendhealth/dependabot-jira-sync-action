@@ -126,47 +126,6 @@ export function calculateDueDate(severity, dueDaysConfig, createdAt) {
 }
 
 /**
- * Check if a Jira issue already exists for a Dependabot alert
- * @param {Object} jiraClient - Jira API client
- * @param {string} projectKey - Jira project key
- * @param {number} alertId - Dependabot alert ID
- * @returns {Promise<Object|null>} Existing issue or null
- */
-export async function findExistingIssue(jiraClient, projectKey, alertId) {
-  // Validate inputs
-  if (!validateProjectKey(projectKey)) {
-    throw new Error(`Invalid project key format: ${projectKey}`)
-  }
-
-  const sanitizedProjectKey = sanitizeForJQL(projectKey)
-  const sanitizedAlertId = parseInt(alertId, 10)
-
-  if (isNaN(sanitizedAlertId)) {
-    throw new Error(`Invalid alert ID: ${alertId}`)
-  }
-
-  try {
-    const jql = `project = "${sanitizedProjectKey}" AND summary ~ "Dependabot Alert #${sanitizedAlertId}"`
-
-    const response = await jiraClient.get('/search/jql', {
-      params: {
-        jql,
-        fields: 'key,summary,status,updated'
-      }
-    })
-
-    core.debug(
-      `Search JQL: ${jql}, found ${response.data?.issues?.length || 0} issues`
-    )
-    return response.data?.issues?.length > 0 ? response.data.issues[0] : null
-  } catch (error) {
-    // Surface API errors so the workflow fails rather than silently skipping
-    core.error(`Failed to search for existing issue: ${error.message}`)
-    throw error
-  }
-}
-
-/**
  * Create a new Jira issue for a Dependabot alert
  * @param {Object} jiraClient - Jira API client
  * @param {Object} config - Jira configuration
@@ -667,13 +626,19 @@ export async function updateJiraIssue(
 }
 
 /**
- * Find all open Dependabot issues in a Jira project
+ * Find all Dependabot issues in a Jira project (both open and resolved)
  * @param {Object} jiraClient - Axios instance for Jira API
  * @param {string} projectKey - Jira project key
  * @param {string} labels - Comma-separated list of labels (e.g., "dependabot,security")
- * @returns {Promise<Array>} Array of open Dependabot issues
+ * @param {boolean} onlyOpen - If true, only return unresolved issues (default: false)
+ * @returns {Promise<Array>} Array of Dependabot issues
  */
-export async function findOpenDependabotIssues(jiraClient, projectKey, labels) {
+export async function findDependabotIssues(
+  jiraClient,
+  projectKey,
+  labels,
+  onlyOpen = false
+) {
   // Validate inputs
   if (!validateProjectKey(projectKey)) {
     throw new Error(`Invalid project key format: ${projectKey}`)
@@ -701,11 +666,17 @@ export async function findOpenDependabotIssues(jiraClient, projectKey, labels) {
     jql += ` AND ${labelConditions}`
   }
 
+  // Optionally filter to only unresolved issues
   // "resolution IS EMPTY" finds issues that are not resolved/closed/done
   // This works across different Jira workflows regardless of status names
-  jql += ' AND resolution IS EMPTY'
+  if (onlyOpen) {
+    jql += ' AND resolution IS EMPTY'
+  }
 
-  core.info(`Searching for open Dependabot issues in project ${projectKey}`)
+  const scopeMsg = onlyOpen ? 'open' : 'all'
+  core.info(
+    `Searching for ${scopeMsg} Dependabot issues in project ${projectKey}`
+  )
   core.debug(`Using JQL: ${jql}`)
 
   try {
@@ -718,48 +689,57 @@ export async function findOpenDependabotIssues(jiraClient, projectKey, labels) {
     })
 
     const issues = response.data.issues || []
-    core.info(`Found ${issues.length} open Dependabot issues`)
+    core.info(`Found ${issues.length} ${scopeMsg} Dependabot issues`)
     return issues
   } catch (error) {
     // Surface API errors so the workflow fails rather than silently skipping
-    core.error(`Failed to search for open Dependabot issues: ${error.message}`)
+    core.error(`Failed to search for Dependabot issues: ${error.message}`)
     throw error
   }
 }
 
 /**
- * Extract Dependabot alert ID from Jira issue
+ * Extract GitHub alert URL from Jira issue description
  * @param {Object} issue - Jira issue object
- * @returns {string|null} Alert ID or null if not found
+ * @returns {string|null} GitHub alert URL or null if not found
  */
-export function extractAlertIdFromIssue(issue) {
+export function extractAlertUrlFromIssue(issue) {
   // Debug: Log the issue structure
   core.debug(
     `Debug: Issue ${issue.key} structure: ${JSON.stringify(issue, null, 2)}`
   )
 
   // Jira API often nests fields under 'fields' object
-  const summary = issue.summary || issue.fields?.summary
   const description = issue.description || issue.fields?.description
 
-  core.info(`Info: Extracted summary: "${summary}"`)
+  // Extract the GitHub alert URL from the description
+  // Pattern: https://github.com/{owner}/{repo}/security/dependabot/{number}
+  const urlMatch = JSON.stringify(description)?.match(
+    /https:\/\/github\.com\/[^/]+\/[^/]+\/security\/dependabot\/\d+/
+  )
 
-  // Try to extract from summary first: "Dependabot Alert #123: ..."
-  const summaryMatch = summary?.match(/Dependabot Alert #(\d+)/)
-  if (summaryMatch) {
-    core.info(`Info: Successfully extracted alert ID: ${summaryMatch[1]}`)
-    return summaryMatch[1]
+  if (urlMatch) {
+    core.debug(
+      `Extracted alert URL ${urlMatch[0]} from description of ${issue.key}`
+    )
+    return urlMatch[0]
   }
 
-  // Try to extract from description: "Alert ID: 123"
-  const descriptionMatch =
-    JSON.stringify(description)?.match(/Alert ID:\s*(\d+)/)
-  if (descriptionMatch) {
-    return descriptionMatch[1]
-  }
-
-  core.warning(`Could not extract alert ID from issue ${issue.key}`)
+  core.warning(`Could not extract GitHub alert URL from issue ${issue.key}`)
   return null
+}
+
+/**
+ * Extract alert ID from a GitHub Dependabot URL
+ * @param {string} url - GitHub alert URL (e.g., https://github.com/owner/repo/security/dependabot/42)
+ * @returns {string|null} Alert ID or null if cannot be extracted
+ */
+export function extractAlertIdFromUrl(url) {
+  if (!url) return null
+
+  // Extract the number from the URL path
+  const match = url.match(/\/security\/dependabot\/(\d+)/)
+  return match ? match[1] : null
 }
 
 /**

@@ -24,11 +24,11 @@ const mockGithub = {
 
 const mockJira = {
   createJiraClient: jest.fn(),
-  findExistingIssue: jest.fn(),
   createJiraIssue: jest.fn(),
   updateJiraIssue: jest.fn(),
-  findOpenDependabotIssues: jest.fn(),
-  extractAlertIdFromIssue: jest.fn(),
+  findDependabotIssues: jest.fn(),
+  extractAlertUrlFromIssue: jest.fn(),
+  extractAlertIdFromUrl: jest.fn(),
   closeJiraIssue: jest.fn()
 }
 
@@ -91,7 +91,9 @@ describe('Dependabot Jira Sync', () => {
       // Mock Jira client
     })
 
-    mockJira.findExistingIssue.mockResolvedValue(null)
+    mockJira.findDependabotIssues.mockResolvedValue([]) // No existing issues by default
+    mockJira.extractAlertUrlFromIssue.mockReturnValue(null)
+    mockJira.extractAlertIdFromUrl.mockReturnValue(null)
     mockJira.createJiraIssue.mockResolvedValue({ key: 'TEST-123' })
     mockJira.updateJiraIssue.mockResolvedValue({ updated: true })
   })
@@ -145,7 +147,8 @@ describe('Dependabot Jira Sync', () => {
 
     mockGithub.getDependabotAlerts.mockResolvedValue([mockAlert])
     mockGithub.parseAlert.mockReturnValue(parsedAlert)
-    mockJira.findExistingIssue.mockResolvedValue(null)
+    // No existing issues
+    mockJira.findDependabotIssues.mockResolvedValue([])
     mockJira.createJiraIssue.mockResolvedValue({ key: 'TEST-123' })
 
     await run()
@@ -183,14 +186,19 @@ describe('Dependabot Jira Sync', () => {
     const parsedAlert = {
       id: 1,
       title: 'Test vulnerability',
-      severity: 'medium'
+      severity: 'medium',
+      url: 'https://github.com/test/alert/1'
     }
 
     const existingIssue = { key: 'TEST-456' }
 
     mockGithub.getDependabotAlerts.mockResolvedValue([mockAlert])
     mockGithub.parseAlert.mockReturnValue(parsedAlert)
-    mockJira.findExistingIssue.mockResolvedValue(existingIssue)
+    // Mock existing issue found by URL
+    mockJira.findDependabotIssues.mockResolvedValue([existingIssue])
+    mockJira.extractAlertUrlFromIssue.mockReturnValue(
+      'https://github.com/test/alert/1'
+    )
 
     await run()
 
@@ -221,7 +229,7 @@ describe('Dependabot Jira Sync', () => {
 
     mockGithub.getDependabotAlerts.mockResolvedValue([mockAlert])
     mockGithub.parseAlert.mockReturnValue({ id: 1, severity: 'high' })
-    mockJira.findExistingIssue.mockResolvedValue(null)
+    mockJira.findDependabotIssues.mockResolvedValue([])
     mockJira.createJiraIssue.mockResolvedValue({
       key: 'DRY-RUN-KEY',
       dryRun: true
@@ -280,7 +288,7 @@ describe('Dependabot Jira Sync', () => {
 
     mockGithub.getDependabotAlerts.mockResolvedValue([mockAlert])
     mockGithub.parseAlert.mockReturnValue(parsedAlert)
-    mockJira.findExistingIssue.mockResolvedValue(null)
+    mockJira.findDependabotIssues.mockResolvedValue([])
     mockJira.createJiraIssue.mockRejectedValue(new Error('Jira blew up'))
 
     await run()
@@ -308,12 +316,18 @@ describe('Dependabot Jira Sync', () => {
 
     mockGithub.getDependabotAlerts.mockResolvedValue([mockAlert])
     mockGithub.parseAlert.mockReturnValue(parsedAlert)
-    mockJira.findExistingIssue.mockResolvedValue(null)
+    // First call: fetch all existing issues (empty)
+    // Second call: fetch open issues for auto-close
+    mockJira.findDependabotIssues
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ key: 'TEST-1' }])
     mockJira.createJiraIssue.mockResolvedValue({ key: 'TEST-7' })
 
     // Auto-close path
-    mockJira.findOpenDependabotIssues.mockResolvedValue([{ key: 'TEST-1' }])
-    mockJira.extractAlertIdFromIssue.mockReturnValue('7')
+    mockJira.extractAlertUrlFromIssue.mockReturnValue(
+      'https://github.com/example/repo/security/dependabot/7'
+    )
+    mockJira.extractAlertIdFromUrl.mockReturnValue('7')
     mockGithub.getAlertStatus.mockResolvedValue('fixed')
     mockJira.closeJiraIssue.mockResolvedValue({ closed: true })
 
