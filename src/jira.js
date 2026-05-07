@@ -712,9 +712,15 @@ export function extractAlertUrlFromIssue(issue) {
   // Jira API often nests fields under 'fields' object
   const description = issue.description || issue.fields?.description
 
-  // Extract the GitHub alert URL from the description
+  if (!description) {
+    core.warning(`Could not extract GitHub alert URL from issue ${issue.key}`)
+    return null
+  }
+
+  // Extract the GitHub alert URL from the description (ADF format)
   // Pattern: https://github.com/{owner}/{repo}/security/dependabot/{number}
-  const urlMatch = JSON.stringify(description)?.match(
+  const descriptionStr = JSON.stringify(description)
+  const urlMatch = descriptionStr.match(
     /https:\/\/github\.com\/[^/]+\/[^/]+\/security\/dependabot\/\d+/
   )
 
