@@ -883,6 +883,20 @@ describe('Jira API Functions', () => {
         'Could not extract GitHub alert URL from issue SEC-123'
       )
     })
+
+    it('should handle string description (legacy format)', () => {
+      const issue = {
+        key: 'SEC-789',
+        description:
+          'Some text with URL: https://github.com/test/repo/security/dependabot/123 more text'
+      }
+
+      const result = extractAlertUrlFromIssue(issue)
+
+      expect(result).toBe(
+        'https://github.com/test/repo/security/dependabot/123'
+      )
+    })
   })
 
   describe('extractAlertIdFromUrl', () => {

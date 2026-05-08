@@ -717,9 +717,23 @@ export function extractAlertUrlFromIssue(issue) {
     return null
   }
 
-  // Extract the GitHub alert URL from the description (ADF format)
+  // Handle both string and ADF object formats
+  let descriptionStr
+  if (typeof description === 'string') {
+    // Plain text description
+    descriptionStr = description
+  } else if (typeof description === 'object') {
+    // ADF (Atlassian Document Format) object - stringify it
+    descriptionStr = JSON.stringify(description)
+  } else {
+    core.warning(
+      `Unexpected description type for issue ${issue.key}: ${typeof description}`
+    )
+    return null
+  }
+
+  // Extract the GitHub alert URL from the description
   // Pattern: https://github.com/{owner}/{repo}/security/dependabot/{number}
-  const descriptionStr = JSON.stringify(description)
   const urlMatch = descriptionStr.match(
     /https:\/\/github\.com\/[^/]+\/[^/]+\/security\/dependabot\/\d+/
   )
