@@ -28,6 +28,7 @@ const mockJira = {
   updateJiraIssue: jest.fn(),
   findDependabotIssues: jest.fn(),
   extractAlertUrlFromIssue: jest.fn(),
+  extractAllAlertUrlsFromIssue: jest.fn(),
   extractAlertIdFromUrl: jest.fn(),
   closeJiraIssue: jest.fn()
 }
@@ -324,9 +325,9 @@ describe('Dependabot Jira Sync', () => {
     mockJira.createJiraIssue.mockResolvedValue({ key: 'TEST-7' })
 
     // Auto-close path
-    mockJira.extractAlertUrlFromIssue.mockReturnValue(
-      'https://github.com/example/repo/security/dependabot/7'
-    )
+    mockJira.extractAllAlertUrlsFromIssue.mockReturnValue([
+      'https://github.com/test-owner/test-repo/security/dependabot/7'
+    ])
     mockJira.extractAlertIdFromUrl.mockReturnValue('7')
     mockGithub.getAlertStatus.mockResolvedValue('fixed')
     mockJira.closeJiraIssue.mockResolvedValue({ closed: true })

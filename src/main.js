@@ -11,6 +11,7 @@ import {
   updateJiraIssue,
   findDependabotIssues,
   extractAlertUrlFromIssue,
+  extractAllAlertUrlsFromIssue,
   extractAlertIdFromUrl,
   closeJiraIssue
 } from './jira.js'
@@ -237,12 +238,33 @@ export async function run() {
 
         for (const issue of openIssues) {
           try {
-            // Extract alert URL from the issue, then get the ID from it
-            const alertUrl = extractAlertUrlFromIssue(issue)
-            if (!alertUrl) {
-              continue // Skip if we can't extract alert URL
+            // Extract ALL alert URLs from the issue to check for cross-repo references
+            const allAlertUrls = extractAllAlertUrlsFromIssue(issue)
+            if (allAlertUrls.length === 0) {
+              core.debug(
+                `No Dependabot alert URLs found in issue ${issue.key}, skipping`
+              )
+              continue
             }
 
+            // Check if there are URLs from other repositories
+            const currentRepoPattern = `https://github.com/${owner}/${repo}/security/dependabot/`
+            const currentRepoUrls = allAlertUrls.filter((url) =>
+              url.startsWith(currentRepoPattern)
+            )
+            const otherRepoUrls = allAlertUrls.filter(
+              (url) => !url.startsWith(currentRepoPattern)
+            )
+
+            if (otherRepoUrls.length > 0) {
+              core.warning(
+                `Issue ${issue.key} contains Dependabot URLs from other repositories: ${otherRepoUrls.join(', ')}. Skipping auto-close to avoid closing issues for other repos.`
+              )
+              continue
+            }
+
+            // Get the primary alert URL for this repo
+            const alertUrl = currentRepoUrls[0]
             const alertId = extractAlertIdFromUrl(alertUrl)
             if (!alertId) {
               core.warning(

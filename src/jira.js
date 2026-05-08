@@ -727,7 +727,9 @@ export async function findDependabotIssues(
       // Continue if there are more issues to fetch
     } while (startAt < total)
 
-    core.info(`Found ${allIssues.length} ${scopeMsg} Dependabot issues${repoMsg}`)
+    core.info(
+      `Found ${allIssues.length} ${scopeMsg} Dependabot issues${repoMsg}`
+    )
     return allIssues
   } catch (error) {
     // Surface API errors so the workflow fails rather than silently skipping
@@ -771,6 +773,37 @@ export function extractAlertUrlFromIssue(issue) {
 
   core.warning(`Could not extract GitHub alert URL from issue ${issue.key}`)
   return null
+}
+
+/**
+ * Extract ALL GitHub alert URLs from Jira issue description
+ * @param {Object} issue - Jira issue object
+ * @returns {string[]} Array of GitHub alert URLs (may be empty)
+ */
+export function extractAllAlertUrlsFromIssue(issue) {
+  // Jira API often nests fields under 'fields' object
+  const description = issue.description || issue.fields?.description
+
+  if (!description) {
+    return []
+  }
+
+  // Extract ALL GitHub alert URLs from the description (ADF format)
+  // Pattern: https://github.com/{owner}/{repo}/security/dependabot/{number}
+  const descriptionStr = JSON.stringify(description)
+  const urlMatches = descriptionStr.matchAll(
+    /https:\/\/github\.com\/[^/]+\/[^/]+\/security\/dependabot\/\d+/g
+  )
+
+  const urls = Array.from(urlMatches, (match) => match[0])
+
+  if (urls.length > 0) {
+    core.debug(
+      `Extracted ${urls.length} alert URL(s) from description of ${issue.key}: ${urls.join(', ')}`
+    )
+  }
+
+  return urls
 }
 
 /**

@@ -58522,7 +58522,9 @@ async function findDependabotIssues(
       // Continue if there are more issues to fetch
     } while (startAt < total)
 
-    coreExports.info(`Found ${allIssues.length} ${scopeMsg} Dependabot issues${repoMsg}`);
+    coreExports.info(
+      `Found ${allIssues.length} ${scopeMsg} Dependabot issues${repoMsg}`
+    );
     return allIssues
   } catch (error) {
     // Surface API errors so the workflow fails rather than silently skipping
@@ -58566,6 +58568,37 @@ function extractAlertUrlFromIssue(issue) {
 
   coreExports.warning(`Could not extract GitHub alert URL from issue ${issue.key}`);
   return null
+}
+
+/**
+ * Extract ALL GitHub alert URLs from Jira issue description
+ * @param {Object} issue - Jira issue object
+ * @returns {string[]} Array of GitHub alert URLs (may be empty)
+ */
+function extractAllAlertUrlsFromIssue(issue) {
+  // Jira API often nests fields under 'fields' object
+  const description = issue.description || issue.fields?.description;
+
+  if (!description) {
+    return []
+  }
+
+  // Extract ALL GitHub alert URLs from the description (ADF format)
+  // Pattern: https://github.com/{owner}/{repo}/security/dependabot/{number}
+  const descriptionStr = JSON.stringify(description);
+  const urlMatches = descriptionStr.matchAll(
+    /https:\/\/github\.com\/[^/]+\/[^/]+\/security\/dependabot\/\d+/g
+  );
+
+  const urls = Array.from(urlMatches, (match) => match[0]);
+
+  if (urls.length > 0) {
+    coreExports.debug(
+      `Extracted ${urls.length} alert URL(s) from description of ${issue.key}: ${urls.join(', ')}`
+    );
+  }
+
+  return urls
 }
 
 /**
@@ -58881,12 +58914,33 @@ async function run() {
 
         for (const issue of openIssues) {
           try {
-            // Extract alert URL from the issue, then get the ID from it
-            const alertUrl = extractAlertUrlFromIssue(issue);
-            if (!alertUrl) {
-              continue // Skip if we can't extract alert URL
+            // Extract ALL alert URLs from the issue to check for cross-repo references
+            const allAlertUrls = extractAllAlertUrlsFromIssue(issue);
+            if (allAlertUrls.length === 0) {
+              coreExports.debug(
+                `No Dependabot alert URLs found in issue ${issue.key}, skipping`
+              );
+              continue
             }
 
+            // Check if there are URLs from other repositories
+            const currentRepoPattern = `https://github.com/${owner}/${repo}/security/dependabot/`;
+            const currentRepoUrls = allAlertUrls.filter((url) =>
+              url.startsWith(currentRepoPattern)
+            );
+            const otherRepoUrls = allAlertUrls.filter(
+              (url) => !url.startsWith(currentRepoPattern)
+            );
+
+            if (otherRepoUrls.length > 0) {
+              coreExports.warning(
+                `Issue ${issue.key} contains Dependabot URLs from other repositories: ${otherRepoUrls.join(', ')}. Skipping auto-close to avoid closing issues for other repos.`
+              );
+              continue
+            }
+
+            // Get the primary alert URL for this repo
+            const alertUrl = currentRepoUrls[0];
             const alertId = extractAlertIdFromUrl(alertUrl);
             if (!alertId) {
               coreExports.warning(

@@ -39,6 +39,7 @@ const {
   updateJiraIssue,
   findDependabotIssues,
   extractAlertUrlFromIssue,
+  extractAllAlertUrlsFromIssue,
   extractAlertIdFromUrl,
   closeJiraIssue
 } = await import('../src/jira.js')
@@ -931,6 +932,102 @@ describe('Jira API Functions', () => {
       expect(mockCore.warning).toHaveBeenCalledWith(
         'Could not extract GitHub alert URL from issue SEC-123'
       )
+    })
+  })
+
+  describe('extractAllAlertUrlsFromIssue', () => {
+    it('should extract all GitHub alert URLs from description', () => {
+      const issue = {
+        key: 'SEC-123',
+        description: {
+          type: 'doc',
+          version: 1,
+          content: [
+            {
+              type: 'paragraph',
+              content: [
+                {
+                  type: 'text',
+                  text: 'Multiple alerts: https://github.com/org1/repo1/security/dependabot/1 and https://github.com/org2/repo2/security/dependabot/2'
+                }
+              ]
+            }
+          ]
+        }
+      }
+
+      const result = extractAllAlertUrlsFromIssue(issue)
+
+      expect(result).toHaveLength(2)
+      expect(result).toContain(
+        'https://github.com/org1/repo1/security/dependabot/1'
+      )
+      expect(result).toContain(
+        'https://github.com/org2/repo2/security/dependabot/2'
+      )
+    })
+
+    it('should return single URL when only one exists', () => {
+      const issue = {
+        key: 'SEC-456',
+        description: {
+          type: 'doc',
+          version: 1,
+          content: [
+            {
+              type: 'paragraph',
+              content: [
+                {
+                  type: 'text',
+                  text: 'https://github.com/myorg/myrepo/security/dependabot/42'
+                }
+              ]
+            }
+          ]
+        }
+      }
+
+      const result = extractAllAlertUrlsFromIssue(issue)
+
+      expect(result).toHaveLength(1)
+      expect(result[0]).toBe(
+        'https://github.com/myorg/myrepo/security/dependabot/42'
+      )
+    })
+
+    it('should return empty array when no URLs found', () => {
+      const issue = {
+        key: 'SEC-789',
+        description: {
+          type: 'doc',
+          version: 1,
+          content: [
+            {
+              type: 'paragraph',
+              content: [
+                {
+                  type: 'text',
+                  text: 'No Dependabot URLs here'
+                }
+              ]
+            }
+          ]
+        }
+      }
+
+      const result = extractAllAlertUrlsFromIssue(issue)
+
+      expect(result).toHaveLength(0)
+    })
+
+    it('should return empty array when description is missing', () => {
+      const issue = {
+        key: 'SEC-999'
+      }
+
+      const result = extractAllAlertUrlsFromIssue(issue)
+
+      expect(result).toHaveLength(0)
     })
   })
 
