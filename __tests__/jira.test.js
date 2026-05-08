@@ -596,6 +596,7 @@ describe('Jira API Functions', () => {
         params: {
           jql: 'project = "SEC" AND labels = "dependabot" AND resolution IS EMPTY',
           fields: 'key,summary,description,status',
+          startAt: 0,
           maxResults: 100
         }
       })
@@ -649,6 +650,7 @@ describe('Jira API Functions', () => {
         params: {
           jql: 'project = "SEC" AND labels = "dependabot"',
           fields: 'key,summary,description,status',
+          startAt: 0,
           maxResults: 100
         }
       })
@@ -692,6 +694,7 @@ describe('Jira API Functions', () => {
         params: {
           jql: 'project = "SEC" AND labels = "dependabot" AND labels = "security" AND labels = "automated" AND resolution IS EMPTY',
           fields: 'key,summary,description,status',
+          startAt: 0,
           maxResults: 100
         }
       })
@@ -714,6 +717,7 @@ describe('Jira API Functions', () => {
         params: {
           jql: 'project = "SEC" AND labels = "dependabot" AND labels = "security" AND resolution IS EMPTY',
           fields: 'key,summary,description,status',
+          startAt: 0,
           maxResults: 100
         }
       })
@@ -728,6 +732,7 @@ describe('Jira API Functions', () => {
         params: {
           jql: 'project = "SEC" AND resolution IS EMPTY',
           fields: 'key,summary,description,status',
+          startAt: 0,
           maxResults: 100
         }
       })
@@ -769,6 +774,50 @@ describe('Jira API Functions', () => {
       ).rejects.toThrow('JQL syntax error')
       expect(mockCore.error).toHaveBeenCalledWith(
         'Failed to search for Dependabot issues: JQL syntax error'
+      )
+    })
+
+    it('should filter by repository when owner and repo are provided', async () => {
+      const mockResponse = {
+        data: {
+          issues: [
+            {
+              key: 'SEC-200',
+              summary: 'Dependabot Alert #50',
+              description: { type: 'doc', content: [] },
+              status: { name: 'Open' }
+            }
+          ],
+          total: 1,
+          startAt: 0,
+          maxResults: 100
+        }
+      }
+
+      mockAxiosInstance.get.mockResolvedValue(mockResponse)
+
+      const result = await findDependabotIssues(
+        mockAxiosInstance,
+        'SEC',
+        'dependabot',
+        true,
+        'myorg',
+        'myrepo'
+      )
+
+      // Should include repository URL pattern in JQL
+      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/search/jql', {
+        params: {
+          jql: 'project = "SEC" AND labels = "dependabot" AND description ~ "https://github.com/myorg/myrepo/security/dependabot/" AND resolution IS EMPTY',
+          fields: 'key,summary,description,status',
+          startAt: 0,
+          maxResults: 100
+        }
+      })
+
+      expect(result).toHaveLength(1)
+      expect(mockCore.info).toHaveBeenCalledWith(
+        'Searching for open Dependabot issues in project SEC for myorg/myrepo'
       )
     })
   })

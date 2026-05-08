@@ -631,13 +631,17 @@ export async function updateJiraIssue(
  * @param {string} projectKey - Jira project key
  * @param {string} labels - Comma-separated list of labels (e.g., "dependabot,security")
  * @param {boolean} onlyOpen - If true, only return unresolved issues (default: false)
+ * @param {string} owner - GitHub repository owner (optional, for filtering by repo)
+ * @param {string} repo - GitHub repository name (optional, for filtering by repo)
  * @returns {Promise<Array>} Array of Dependabot issues
  */
 export async function findDependabotIssues(
   jiraClient,
   projectKey,
   labels,
-  onlyOpen = false
+  onlyOpen = false,
+  owner = null,
+  repo = null
 ) {
   // Validate inputs
   if (!validateProjectKey(projectKey)) {
@@ -666,6 +670,14 @@ export async function findDependabotIssues(
     jql += ` AND ${labelConditions}`
   }
 
+  // Filter by repository URL pattern to only get issues for this specific repo
+  // This prevents matching issues from other repositories
+  if (owner && repo) {
+    const repoUrlPattern = `https://github.com/${sanitizeForJQL(owner)}/${sanitizeForJQL(repo)}/security/dependabot/`
+    jql += ` AND description ~ "${repoUrlPattern}"`
+    core.debug(`Filtering to repository: ${owner}/${repo}`)
+  }
+
   // Optionally filter to only unresolved issues
   // "resolution IS EMPTY" finds issues that are not resolved/closed/done
   // This works across different Jira workflows regardless of status names
@@ -674,23 +686,49 @@ export async function findDependabotIssues(
   }
 
   const scopeMsg = onlyOpen ? 'open' : 'all'
+  const repoMsg = owner && repo ? ` for ${owner}/${repo}` : ''
   core.info(
-    `Searching for ${scopeMsg} Dependabot issues in project ${projectKey}`
+    `Searching for ${scopeMsg} Dependabot issues in project ${projectKey}${repoMsg}`
   )
   core.debug(`Using JQL: ${jql}`)
 
   try {
-    const response = await jiraClient.get('/search/jql', {
-      params: {
-        jql,
-        fields: 'key,summary,description,status',
-        maxResults: 100
-      }
-    })
+    // Pagination: Jira returns results in pages
+    // We need to fetch all pages to get all issues
+    let allIssues = []
+    let startAt = 0
+    const maxResults = 100
+    let total = 0
 
-    const issues = response.data.issues || []
-    core.info(`Found ${issues.length} ${scopeMsg} Dependabot issues`)
-    return issues
+    do {
+      core.debug(
+        `Fetching issues: startAt=${startAt}, maxResults=${maxResults}`
+      )
+
+      const response = await jiraClient.get('/search/jql', {
+        params: {
+          jql,
+          fields: 'key,summary,description,status',
+          startAt,
+          maxResults
+        }
+      })
+
+      const issues = response.data.issues || []
+      total = response.data.total || 0
+
+      allIssues = allIssues.concat(issues)
+      startAt += issues.length
+
+      core.debug(
+        `Retrieved ${issues.length} issues (${allIssues.length} of ${total} total)`
+      )
+
+      // Continue if there are more issues to fetch
+    } while (startAt < total)
+
+    core.info(`Found ${allIssues.length} ${scopeMsg} Dependabot issues${repoMsg}`)
+    return allIssues
   } catch (error) {
     // Surface API errors so the workflow fails rather than silently skipping
     core.error(`Failed to search for Dependabot issues: ${error.message}`)

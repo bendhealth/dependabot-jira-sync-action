@@ -140,7 +140,9 @@ export async function run() {
       jiraClient,
       config.jira.projectKey,
       config.jira.labels,
-      false // Get all issues (both open and resolved)
+      false, // Get all issues (both open and resolved)
+      owner, // Filter by current repository
+      repo
     )
 
     // Build a lookup map: alertUrl -> Jira issue
@@ -228,7 +230,9 @@ export async function run() {
           jiraClient,
           config.jira.projectKey,
           config.jira.labels,
-          true // Only fetch unresolved issues
+          true, // Only fetch unresolved issues
+          owner, // Filter by current repository
+          repo
         )
 
         for (const issue of openIssues) {
