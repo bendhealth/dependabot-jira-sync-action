@@ -57921,47 +57921,6 @@ function calculateDueDate(severity, dueDaysConfig, createdAt) {
 }
 
 /**
- * Check if a Jira issue already exists for a Dependabot alert
- * @param {Object} jiraClient - Jira API client
- * @param {string} projectKey - Jira project key
- * @param {number} alertId - Dependabot alert ID
- * @returns {Promise<Object|null>} Existing issue or null
- */
-async function findExistingIssue(jiraClient, projectKey, alertId) {
-  // Validate inputs
-  if (!validateProjectKey(projectKey)) {
-    throw new Error(`Invalid project key format: ${projectKey}`)
-  }
-
-  const sanitizedProjectKey = sanitizeForJQL(projectKey);
-  const sanitizedAlertId = parseInt(alertId, 10);
-
-  if (isNaN(sanitizedAlertId)) {
-    throw new Error(`Invalid alert ID: ${alertId}`)
-  }
-
-  try {
-    const jql = `project = "${sanitizedProjectKey}" AND summary ~ "Dependabot Alert #${sanitizedAlertId}"`;
-
-    const response = await jiraClient.get('/search/jql', {
-      params: {
-        jql,
-        fields: 'key,summary,status,updated'
-      }
-    });
-
-    coreExports.debug(
-      `Search JQL: ${jql}, found ${response.data?.issues?.length || 0} issues`
-    );
-    return response.data?.issues?.length > 0 ? response.data.issues[0] : null
-  } catch (error) {
-    // Surface API errors so the workflow fails rather than silently skipping
-    coreExports.error(`Failed to search for existing issue: ${error.message}`);
-    throw error
-  }
-}
-
-/**
  * Create a new Jira issue for a Dependabot alert
  * @param {Object} jiraClient - Jira API client
  * @param {Object} config - Jira configuration
@@ -58462,21 +58421,58 @@ async function updateJiraIssue(
 }
 
 /**
- * Find all open Dependabot issues in a Jira project
+ * Find all Dependabot issues in a Jira project (both open and resolved)
  * @param {Object} jiraClient - Axios instance for Jira API
  * @param {string} projectKey - Jira project key
- * @returns {Promise<Array>} Array of open Dependabot issues
+ * @param {string} labels - Comma-separated list of labels (e.g., "dependabot,security")
+ * @param {boolean} onlyOpen - If true, only return unresolved issues (default: false)
+ * @returns {Promise<Array>} Array of Dependabot issues
  */
-async function findOpenDependabotIssues(jiraClient, projectKey) {
+async function findDependabotIssues(
+  jiraClient,
+  projectKey,
+  labels,
+  onlyOpen = false
+) {
   // Validate inputs
   if (!validateProjectKey(projectKey)) {
     throw new Error(`Invalid project key format: ${projectKey}`)
   }
 
   const sanitizedProjectKey = sanitizeForJQL(projectKey);
-  const jql = `project = "${sanitizedProjectKey}" AND labels = "dependabot" AND resolution IS EMPTY`;
 
-  coreExports.info(`Searching for open Dependabot issues in project ${projectKey}`);
+  // Build label filter from configured labels
+  // Parse comma-separated labels and create JQL conditions
+  const labelArray = labels
+    ? labels
+        .split(',')
+        .map((label) => label.trim())
+        .filter((label) => label.length > 0)
+    : [];
+
+  // Build JQL query with label conditions
+  // Use AND to match issues that have all configured labels
+  let jql = `project = "${sanitizedProjectKey}"`;
+
+  if (labelArray.length > 0) {
+    const labelConditions = labelArray
+      .map((label) => `labels = "${sanitizeForJQL(label)}"`)
+      .join(' AND ');
+    jql += ` AND ${labelConditions}`;
+  }
+
+  // Optionally filter to only unresolved issues
+  // "resolution IS EMPTY" finds issues that are not resolved/closed/done
+  // This works across different Jira workflows regardless of status names
+  if (onlyOpen) {
+    jql += ' AND resolution IS EMPTY';
+  }
+
+  const scopeMsg = onlyOpen ? 'open' : 'all';
+  coreExports.info(
+    `Searching for ${scopeMsg} Dependabot issues in project ${projectKey}`
+  );
+  coreExports.debug(`Using JQL: ${jql}`);
 
   try {
     const response = await jiraClient.get('/search/jql', {
@@ -58488,47 +58484,77 @@ async function findOpenDependabotIssues(jiraClient, projectKey) {
     });
 
     const issues = response.data.issues || [];
-    coreExports.info(`Found ${issues.length} open Dependabot issues`);
+    coreExports.info(`Found ${issues.length} ${scopeMsg} Dependabot issues`);
     return issues
   } catch (error) {
     // Surface API errors so the workflow fails rather than silently skipping
-    coreExports.error(`Failed to search for open Dependabot issues: ${error.message}`);
+    coreExports.error(`Failed to search for Dependabot issues: ${error.message}`);
     throw error
   }
 }
 
 /**
- * Extract Dependabot alert ID from Jira issue
+ * Extract GitHub alert URL from Jira issue description
  * @param {Object} issue - Jira issue object
- * @returns {string|null} Alert ID or null if not found
+ * @returns {string|null} GitHub alert URL or null if not found
  */
-function extractAlertIdFromIssue(issue) {
+function extractAlertUrlFromIssue(issue) {
   // Debug: Log the issue structure
   coreExports.debug(
     `Debug: Issue ${issue.key} structure: ${JSON.stringify(issue, null, 2)}`
   );
 
   // Jira API often nests fields under 'fields' object
-  const summary = issue.summary || issue.fields?.summary;
   const description = issue.description || issue.fields?.description;
 
-  coreExports.info(`Info: Extracted summary: "${summary}"`);
-
-  // Try to extract from summary first: "Dependabot Alert #123: ..."
-  const summaryMatch = summary?.match(/Dependabot Alert #(\d+)/);
-  if (summaryMatch) {
-    coreExports.info(`Info: Successfully extracted alert ID: ${summaryMatch[1]}`);
-    return summaryMatch[1]
+  if (!description) {
+    coreExports.warning(`Could not extract GitHub alert URL from issue ${issue.key}`);
+    return null
   }
 
-  // Try to extract from description: "Alert ID: 123"
-  const descriptionMatch = description?.match(/Alert ID:\s*(\d+)/);
-  if (descriptionMatch) {
-    return descriptionMatch[1]
+  // Handle both string and ADF object formats
+  let descriptionStr;
+  if (typeof description === 'string') {
+    // Plain text description
+    descriptionStr = description;
+  } else if (typeof description === 'object') {
+    // ADF (Atlassian Document Format) object - stringify it
+    descriptionStr = JSON.stringify(description);
+  } else {
+    coreExports.warning(
+      `Unexpected description type for issue ${issue.key}: ${typeof description}`
+    );
+    return null
   }
 
-  coreExports.warning(`Could not extract alert ID from issue ${issue.key}`);
+  // Extract the GitHub alert URL from the description
+  // Pattern: https://github.com/{owner}/{repo}/security/dependabot/{number}
+  const urlMatch = descriptionStr.match(
+    /https:\/\/github\.com\/[^/]+\/[^/]+\/security\/dependabot\/\d+/
+  );
+
+  if (urlMatch) {
+    coreExports.debug(
+      `Extracted alert URL ${urlMatch[0]} from description of ${issue.key}`
+    );
+    return urlMatch[0]
+  }
+
+  coreExports.warning(`Could not extract GitHub alert URL from issue ${issue.key}`);
   return null
+}
+
+/**
+ * Extract alert ID from a GitHub Dependabot URL
+ * @param {string} url - GitHub alert URL (e.g., https://github.com/owner/repo/security/dependabot/42)
+ * @returns {string|null} Alert ID or null if cannot be extracted
+ */
+function extractAlertIdFromUrl(url) {
+  if (!url) return null
+
+  // Extract the number from the URL path
+  const match = url.match(/\/security\/dependabot\/(\d+)/);
+  return match ? match[1] : null
 }
 
 /**
@@ -58728,6 +58754,29 @@ async function run() {
       config.jira.apiToken
     );
 
+    // Fetch all existing Dependabot issues once (more efficient than N individual queries)
+    coreExports.info('Fetching existing Dependabot issues from Jira...');
+    const existingIssues = await findDependabotIssues(
+      jiraClient,
+      config.jira.projectKey,
+      config.jira.labels,
+      false // Get all issues (both open and resolved)
+    );
+
+    // Build a lookup map: alertUrl -> Jira issue
+    const issueMap = new Map();
+    for (const issue of existingIssues) {
+      const alertUrl = extractAlertUrlFromIssue(issue);
+      if (alertUrl) {
+        issueMap.set(alertUrl, issue);
+        coreExports.debug(`Mapped alert URL ${alertUrl} to Jira issue ${issue.key}`);
+      }
+    }
+
+    coreExports.info(
+      `Built lookup map with ${issueMap.size} alert-to-issue mappings from ${existingIssues.length} Jira issues`
+    );
+
     let issuesCreated = 0;
     let issuesUpdated = 0;
     let processingErrors = 0;
@@ -58741,12 +58790,8 @@ async function run() {
 
         coreExports.info(`Processing alert #${parsedAlert.id}: ${parsedAlert.title}`);
 
-        // Check if issue already exists
-        const existingIssue = await findExistingIssue(
-          jiraClient,
-          config.jira.projectKey,
-          parsedAlert.id
-        );
+        // Check if issue already exists using in-memory lookup by URL
+        const existingIssue = issueMap.get(parsedAlert.url);
 
         if (existingIssue) {
           if (config.behavior.updateExisting) {
@@ -58798,18 +58843,28 @@ async function run() {
       coreExports.info('\n🔄 Checking for resolved alerts to auto-close...');
 
       try {
-        // Find all open Dependabot issues in Jira
-        const openIssues = await findOpenDependabotIssues(
+        // Find only open Dependabot issues in Jira
+        const openIssues = await findDependabotIssues(
           jiraClient,
-          config.jira.projectKey
+          config.jira.projectKey,
+          config.jira.labels,
+          true // Only fetch unresolved issues
         );
 
         for (const issue of openIssues) {
           try {
-            // Extract alert ID from the issue
-            const alertId = extractAlertIdFromIssue(issue);
+            // Extract alert URL from the issue, then get the ID from it
+            const alertUrl = extractAlertUrlFromIssue(issue);
+            if (!alertUrl) {
+              continue // Skip if we can't extract alert URL
+            }
+
+            const alertId = extractAlertIdFromUrl(alertUrl);
             if (!alertId) {
-              continue // Skip if we can't extract alert ID
+              coreExports.warning(
+                `Could not extract alert ID from URL ${alertUrl} in issue ${issue.key}`
+              );
+              continue
             }
 
             // Check status of the alert in GitHub
