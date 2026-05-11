@@ -118,7 +118,8 @@ describe('GitHub API Functions', () => {
         owner: 'owner',
         repo: 'repo',
         state: 'open',
-        per_page: 100
+        per_page: 100,
+        page: 1
       })
 
       // Should only return high severity alert (medium+ threshold, open state)
@@ -144,7 +145,8 @@ describe('GitHub API Functions', () => {
         owner: 'owner',
         repo: 'repo',
         state: 'all',
-        per_page: 100
+        per_page: 100,
+        page: 1
       })
 
       // Should return all 3 alerts
@@ -168,7 +170,8 @@ describe('GitHub API Functions', () => {
         owner: 'owner',
         repo: 'repo',
         state: 'open',
-        per_page: 100
+        per_page: 100,
+        page: 1
       })
 
       // Should include both open alerts (high + low), exclude dismissed critical
@@ -194,6 +197,59 @@ describe('GitHub API Functions', () => {
       expect(mockCore.error).toHaveBeenCalledWith(
         'Failed to fetch Dependabot alerts: API rate limit exceeded'
       )
+    })
+
+    it('should paginate through multiple pages of alerts', async () => {
+      // Create 150 mock alerts across 2 pages
+      const page1Alerts = Array.from({ length: 100 }, (_, i) => ({
+        number: i + 1,
+        security_advisory: { severity: 'high' },
+        state: 'open'
+      }))
+
+      const page2Alerts = Array.from({ length: 50 }, (_, i) => ({
+        number: i + 101,
+        security_advisory: { severity: 'high' },
+        state: 'open'
+      }))
+
+      // Mock two API calls - first returns 100, second returns 50
+      mockOctokit.rest.dependabot.listAlertsForRepo
+        .mockResolvedValueOnce({ data: page1Alerts })
+        .mockResolvedValueOnce({ data: page2Alerts })
+
+      const result = await getDependabotAlerts('owner', 'repo', {
+        excludeDismissed: true,
+        severityThreshold: 'low'
+      })
+
+      // Verify pagination calls
+      expect(
+        mockOctokit.rest.dependabot.listAlertsForRepo
+      ).toHaveBeenCalledTimes(2)
+      expect(
+        mockOctokit.rest.dependabot.listAlertsForRepo
+      ).toHaveBeenNthCalledWith(1, {
+        owner: 'owner',
+        repo: 'repo',
+        state: 'open',
+        per_page: 100,
+        page: 1
+      })
+      expect(
+        mockOctokit.rest.dependabot.listAlertsForRepo
+      ).toHaveBeenNthCalledWith(2, {
+        owner: 'owner',
+        repo: 'repo',
+        state: 'open',
+        per_page: 100,
+        page: 2
+      })
+
+      // Verify all 150 alerts were returned
+      expect(result).toHaveLength(150)
+      expect(result[0].number).toBe(1)
+      expect(result[149].number).toBe(150)
     })
   })
 

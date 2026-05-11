@@ -111,16 +111,37 @@ export async function getDependabotAlerts(owner, repo, options = {}) {
   core.info(`Fetching Dependabot alerts for ${owner}/${repo}`)
 
   try {
-    // Get Dependabot alerts using the REST API
-    const response = await octokit.rest.dependabot.listAlertsForRepo({
-      owner,
-      repo,
-      state: excludeDismissed ? 'open' : 'all',
-      per_page: 100
-    })
+    // Pagination: GitHub returns results in pages
+    let allAlerts = []
+    let page = 1
+    const perPage = 100
+    let hasMorePages = true
 
-    const alerts = response.data
-    core.info(`Found ${alerts.length} total alerts`)
+    while (hasMorePages) {
+      core.debug(`Fetching page ${page} of Dependabot alerts`)
+
+      const response = await octokit.rest.dependabot.listAlertsForRepo({
+        owner,
+        repo,
+        state: excludeDismissed ? 'open' : 'all',
+        per_page: perPage,
+        page
+      })
+
+      const alerts = response.data
+      allAlerts = allAlerts.concat(alerts)
+
+      core.info(
+        `Retrieved ${alerts.length} alerts on page ${page} (${allAlerts.length} total so far)`
+      )
+
+      // Check if there are more pages
+      // GitHub returns fewer than per_page items on the last page
+      hasMorePages = alerts.length === perPage
+      page++
+    }
+
+    core.info(`Found ${allAlerts.length} total alerts`)
 
     // Filter by severity threshold
     const severityLevels = ['low', 'medium', 'high', 'critical']
@@ -132,7 +153,7 @@ export async function getDependabotAlerts(owner, repo, options = {}) {
       throw new Error(`Invalid severity threshold: ${severityThreshold}`)
     }
 
-    const filteredAlerts = alerts.filter((alert) => {
+    const filteredAlerts = allAlerts.filter((alert) => {
       const alertSeverity = alert.security_advisory?.severity?.toLowerCase()
       const alertSeverityIndex = severityLevels.indexOf(alertSeverity)
       return alertSeverityIndex >= minSeverityIndex
