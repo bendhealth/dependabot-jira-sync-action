@@ -111,34 +111,30 @@ export async function getDependabotAlerts(owner, repo, options = {}) {
   core.info(`Fetching Dependabot alerts for ${owner}/${repo}`)
 
   try {
-    // Pagination: GitHub returns results in pages
+    // Pagination: GitHub uses link-based pagination for Dependabot alerts
     let allAlerts = []
-    let page = 1
     const perPage = 100
-    let hasMorePages = true
 
-    while (hasMorePages) {
-      core.debug(`Fetching page ${page} of Dependabot alerts`)
-
-      const response = await octokit.rest.dependabot.listAlertsForRepo({
+    // Use octokit.paginate to automatically follow Link headers
+    const iterator = octokit.paginate.iterator(
+      octokit.rest.dependabot.listAlertsForRepo,
+      {
         owner,
         repo,
         state: excludeDismissed ? 'open' : 'all',
-        per_page: perPage,
-        page
-      })
+        per_page: perPage
+      }
+    )
 
+    let pageNum = 0
+    for await (const response of iterator) {
+      pageNum++
       const alerts = response.data
       allAlerts = allAlerts.concat(alerts)
 
       core.info(
-        `Retrieved ${alerts.length} alerts on page ${page} (${allAlerts.length} total so far)`
+        `Retrieved ${alerts.length} alerts on page ${pageNum} (${allAlerts.length} total so far)`
       )
-
-      // Check if there are more pages
-      // GitHub returns fewer than per_page items on the last page
-      hasMorePages = alerts.length === perPage
-      page++
     }
 
     core.info(`Found ${allAlerts.length} total alerts`)

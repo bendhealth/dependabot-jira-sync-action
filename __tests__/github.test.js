@@ -13,12 +13,16 @@ const mockCore = {
 }
 
 // Mock @actions/github
+const mockPaginateIterator = jest.fn()
 const mockOctokit = {
   rest: {
     dependabot: {
       listAlertsForRepo: jest.fn(),
       getAlert: jest.fn()
     }
+  },
+  paginate: {
+    iterator: mockPaginateIterator
   }
 }
 
@@ -93,10 +97,12 @@ describe('GitHub API Functions', () => {
     ]
 
     beforeEach(() => {
-      // Default to open alerts
-      mockOctokit.rest.dependabot.listAlertsForRepo.mockResolvedValue({
-        data: mockAlertsOpen
-      })
+      // Mock paginate.iterator to return single page by default
+      mockPaginateIterator.mockReturnValue(
+        (async function* () {
+          yield { data: mockAlertsOpen }
+        })()
+      )
 
       // Mock token authentication (default)
       mockCore.getInput.mockImplementation((name) => {
@@ -112,15 +118,15 @@ describe('GitHub API Functions', () => {
       })
 
       expect(mockGetOctokit).toHaveBeenCalledWith('mock-token')
-      expect(
-        mockOctokit.rest.dependabot.listAlertsForRepo
-      ).toHaveBeenCalledWith({
-        owner: 'owner',
-        repo: 'repo',
-        state: 'open',
-        per_page: 100,
-        page: 1
-      })
+      expect(mockPaginateIterator).toHaveBeenCalledWith(
+        mockOctokit.rest.dependabot.listAlertsForRepo,
+        {
+          owner: 'owner',
+          repo: 'repo',
+          state: 'open',
+          per_page: 100
+        }
+      )
 
       // Should only return high severity alert (medium+ threshold, open state)
       // Critical alert is dismissed, so excluded
@@ -129,50 +135,54 @@ describe('GitHub API Functions', () => {
     })
 
     it('should include dismissed alerts when excludeDismissed is false', async () => {
-      // Mock the API to return all alerts when state: 'all'
-      mockOctokit.rest.dependabot.listAlertsForRepo.mockResolvedValueOnce({
-        data: mockAlertsAll
-      })
+      // Mock the paginate iterator to return all alerts
+      mockPaginateIterator.mockReturnValueOnce(
+        (async function* () {
+          yield { data: mockAlertsAll }
+        })()
+      )
 
       const result = await getDependabotAlerts('owner', 'repo', {
         excludeDismissed: false,
         severityThreshold: 'low'
       })
 
-      expect(
-        mockOctokit.rest.dependabot.listAlertsForRepo
-      ).toHaveBeenCalledWith({
-        owner: 'owner',
-        repo: 'repo',
-        state: 'all',
-        per_page: 100,
-        page: 1
-      })
+      expect(mockPaginateIterator).toHaveBeenCalledWith(
+        mockOctokit.rest.dependabot.listAlertsForRepo,
+        {
+          owner: 'owner',
+          repo: 'repo',
+          state: 'all',
+          per_page: 100
+        }
+      )
 
       // Should return all 3 alerts
       expect(result).toHaveLength(3)
     })
 
     it('should include low severity when threshold is low and exclude dismissed alerts', async () => {
-      // API returns only open alerts when excludeDismissed is true
-      mockOctokit.rest.dependabot.listAlertsForRepo.mockResolvedValueOnce({
-        data: mockAlertsOpen
-      })
+      // Mock paginate iterator to return only open alerts
+      mockPaginateIterator.mockReturnValueOnce(
+        (async function* () {
+          yield { data: mockAlertsOpen }
+        })()
+      )
 
       const result = await getDependabotAlerts('owner', 'repo', {
         excludeDismissed: true,
         severityThreshold: 'low'
       })
 
-      expect(
-        mockOctokit.rest.dependabot.listAlertsForRepo
-      ).toHaveBeenCalledWith({
-        owner: 'owner',
-        repo: 'repo',
-        state: 'open',
-        per_page: 100,
-        page: 1
-      })
+      expect(mockPaginateIterator).toHaveBeenCalledWith(
+        mockOctokit.rest.dependabot.listAlertsForRepo,
+        {
+          owner: 'owner',
+          repo: 'repo',
+          state: 'open',
+          per_page: 100
+        }
+      )
 
       // Should include both open alerts (high + low), exclude dismissed critical
       expect(result.map((a) => a.number).sort()).toEqual([1, 2])
@@ -188,7 +198,12 @@ describe('GitHub API Functions', () => {
 
     it('should handle GitHub API errors', async () => {
       const apiError = new Error('API rate limit exceeded')
-      mockOctokit.rest.dependabot.listAlertsForRepo.mockRejectedValue(apiError)
+      // Mock iterator that throws an error
+      mockPaginateIterator.mockReturnValueOnce(
+        (async function* () {
+          throw apiError
+        })()
+      )
 
       await expect(getDependabotAlerts('owner', 'repo')).rejects.toThrow(
         'API rate limit exceeded'
@@ -213,38 +228,29 @@ describe('GitHub API Functions', () => {
         state: 'open'
       }))
 
-      // Mock two API calls - first returns 100, second returns 50
-      mockOctokit.rest.dependabot.listAlertsForRepo
-        .mockResolvedValueOnce({ data: page1Alerts })
-        .mockResolvedValueOnce({ data: page2Alerts })
+      // Mock paginate iterator to yield two pages
+      mockPaginateIterator.mockReturnValueOnce(
+        (async function* () {
+          yield { data: page1Alerts }
+          yield { data: page2Alerts }
+        })()
+      )
 
       const result = await getDependabotAlerts('owner', 'repo', {
         excludeDismissed: true,
         severityThreshold: 'low'
       })
 
-      // Verify pagination calls
-      expect(
-        mockOctokit.rest.dependabot.listAlertsForRepo
-      ).toHaveBeenCalledTimes(2)
-      expect(
-        mockOctokit.rest.dependabot.listAlertsForRepo
-      ).toHaveBeenNthCalledWith(1, {
-        owner: 'owner',
-        repo: 'repo',
-        state: 'open',
-        per_page: 100,
-        page: 1
-      })
-      expect(
-        mockOctokit.rest.dependabot.listAlertsForRepo
-      ).toHaveBeenNthCalledWith(2, {
-        owner: 'owner',
-        repo: 'repo',
-        state: 'open',
-        per_page: 100,
-        page: 2
-      })
+      // Verify paginate.iterator was called with correct params
+      expect(mockPaginateIterator).toHaveBeenCalledWith(
+        mockOctokit.rest.dependabot.listAlertsForRepo,
+        {
+          owner: 'owner',
+          repo: 'repo',
+          state: 'open',
+          per_page: 100
+        }
+      )
 
       // Verify all 150 alerts were returned
       expect(result).toHaveLength(150)
