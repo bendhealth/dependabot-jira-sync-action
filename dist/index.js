@@ -58619,6 +58619,33 @@ function extractAllAlertUrlsFromIssue(issue) {
 }
 
 /**
+ * Extract CVE ID from a Jira issue description
+ * @param {Object} issue - Jira issue object
+ * @returns {string|null} CVE ID or null if not found
+ */
+function extractCveIdFromIssue(issue) {
+  // Jira API often nests fields under 'fields' object
+  const description = issue.description || issue.fields?.description;
+
+  if (!description) {
+    return null
+  }
+
+  // Extract CVE ID from the description (ADF format)
+  // Pattern: CVE-YYYY-NNNNN (e.g., CVE-2024-12345)
+  const descriptionStr = JSON.stringify(description);
+  const cveMatch = descriptionStr.match(/CVE-\d{4}-\d{4,}/i);
+
+  if (cveMatch) {
+    const cveId = cveMatch[0].toUpperCase();
+    coreExports.debug(`Extracted CVE ID ${cveId} from issue ${issue.key}`);
+    return cveId
+  }
+
+  return null
+}
+
+/**
  * Extract alert ID from a GitHub Dependabot URL
  * @param {string} url - GitHub alert URL (e.g., https://github.com/owner/repo/security/dependabot/42)
  * @returns {string|null} Alert ID or null if cannot be extracted
@@ -58710,6 +58737,185 @@ async function closeJiraIssue(
 }
 
 /**
+ * Append a GitHub alert URL to an existing Jira issue description
+ * @param {Object} jiraClient - Axios instance for Jira API
+ * @param {string} issueKey - Jira issue key
+ * @param {string} alertUrl - GitHub Dependabot alert URL to append
+ * @param {boolean} dryRun - Whether this is a dry run
+ * @returns {Promise<Object>} Update result
+ */
+async function appendAlertUrlToIssue(
+  jiraClient,
+  issueKey,
+  alertUrl,
+  dryRun = false
+) {
+  if (dryRun) {
+    coreExports.info(
+      `[DRY RUN] Would append alert URL to issue ${issueKey}: ${alertUrl}`
+    );
+    return { updated: false, dryRun: true }
+  }
+
+  try {
+    // Fetch current issue to get the description
+    const issueResponse = await jiraClient.get(`/issue/${issueKey}`, {
+      params: {
+        fields: 'description'
+      }
+    });
+
+    const currentDescription = issueResponse.data.fields.description || {
+      type: 'doc',
+      version: 1,
+      content: []
+    };
+
+    // Check if the URL is already in the description
+    const descriptionStr = JSON.stringify(currentDescription);
+    if (descriptionStr.includes(alertUrl)) {
+      coreExports.info(
+        `Alert URL already exists in issue ${issueKey}, skipping append`
+      );
+      return { updated: false, alreadyExists: true }
+    }
+
+    // Append the new alert URL to the description
+    const newContent = [
+      ...currentDescription.content,
+      {
+        type: 'paragraph',
+        content: []
+      },
+      {
+        type: 'paragraph',
+        content: [
+          {
+            type: 'text',
+            text: 'Additional GitHub Alert URL: ',
+            marks: [{ type: 'strong' }]
+          },
+          {
+            type: 'text',
+            text: alertUrl,
+            marks: [
+              {
+                type: 'link',
+                attrs: {
+                  href: alertUrl
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ];
+
+    const updatedDescription = {
+      type: 'doc',
+      version: 1,
+      content: newContent
+    };
+
+    // Update the issue description
+    await jiraClient.put(`/issue/${issueKey}`, {
+      fields: {
+        description: updatedDescription
+      }
+    });
+
+    coreExports.info(`Appended alert URL to issue ${issueKey}: ${alertUrl}`);
+    return { updated: true }
+  } catch (error) {
+    coreExports.error(
+      `Failed to append alert URL to issue ${issueKey}: ${error.message}`
+    );
+    throw error
+  }
+}
+
+/**
+ * Reopen a closed Jira issue by transitioning it to an open state
+ * @param {Object} jiraClient - Axios instance for Jira API
+ * @param {string} issueKey - Jira issue key
+ * @param {string} reopenTransition - Transition name to reopen (e.g., "Reopen", "To Do")
+ * @param {string} comment - Comment to add when reopening
+ * @param {boolean} dryRun - Whether this is a dry run
+ * @returns {Promise<Object>} Result of the operation
+ */
+async function reopenJiraIssue(
+  jiraClient,
+  issueKey,
+  reopenTransition,
+  comment,
+  dryRun = false
+) {
+  if (dryRun) {
+    coreExports.info(
+      `[DRY RUN] Would reopen issue ${issueKey} using transition "${reopenTransition}"`
+    );
+    return { reopened: false, dryRun: true }
+  }
+
+  try {
+    // Get available transitions for this issue
+    const transitionsResponse = await jiraClient.get(
+      `/issue/${issueKey}/transitions`
+    );
+    const availableTransitions = transitionsResponse.data.transitions || [];
+
+    // Find the transition by name (case-insensitive)
+    const targetTransition = availableTransitions.find(
+      (t) => t.name.toLowerCase() === reopenTransition.toLowerCase()
+    );
+
+    if (!targetTransition) {
+      const availableNames = availableTransitions.map((t) => t.name).join(', ');
+      coreExports.warning(
+        `Transition "${reopenTransition}" not available for issue ${issueKey}. Available transitions: ${availableNames}. Issue may already be open.`
+      );
+      return { reopened: false, transitionNotAvailable: true }
+    }
+
+    // Add comment first
+    if (comment) {
+      await jiraClient.post(`/issue/${issueKey}/comment`, {
+        body: {
+          type: 'doc',
+          version: 1,
+          content: [
+            {
+              type: 'paragraph',
+              content: [
+                {
+                  type: 'text',
+                  text: comment
+                }
+              ]
+            }
+          ]
+        }
+      });
+    }
+
+    // Perform the transition
+    await jiraClient.post(`/issue/${issueKey}/transitions`, {
+      transition: {
+        id: targetTransition.id
+      }
+    });
+
+    coreExports.info(
+      `Reopened Jira issue: ${issueKey} using transition "${reopenTransition}"`
+    );
+    return { reopened: true }
+  } catch (error) {
+    coreExports.error(`Failed to reopen Jira issue ${issueKey}: ${error.message}`);
+    throw error
+  }
+}
+
+/**
  * Get input configuration from action inputs
  * @returns {Object} Configuration object
  */
@@ -58782,6 +58988,7 @@ function getConfig() {
       closeComment:
         coreExports.getInput('close-comment') ||
         'This issue has been automatically closed because the associated Dependabot alert was resolved.',
+      reopenTransition: coreExports.getInput('reopen-transition') || 'Reopen',
       dryRun: coreExports.getBooleanInput('dry-run') === true
     }
   }
@@ -58839,22 +59046,38 @@ async function run() {
       repo
     );
 
-    // Build a lookup map: alertUrl -> Jira issue
+    // Build lookup maps:
+    // 1. alertUrl -> Jira issue (for matching by URL)
+    // 2. cveId -> Jira issue (for CVE-based grouping)
     const issueMap = new Map();
+    const cveMap = new Map();
+
     for (const issue of existingIssues) {
       const alertUrl = extractAlertUrlFromIssue(issue);
       if (alertUrl) {
         issueMap.set(alertUrl, issue);
         coreExports.debug(`Mapped alert URL ${alertUrl} to Jira issue ${issue.key}`);
       }
+
+      // Also map by CVE ID if present
+      const cveId = extractCveIdFromIssue(issue);
+      if (cveId) {
+        // CVE might map to multiple issues, but we'll use the first one found
+        if (!cveMap.has(cveId)) {
+          cveMap.set(cveId, issue);
+          coreExports.debug(`Mapped CVE ID ${cveId} to Jira issue ${issue.key}`);
+        }
+      }
     }
 
     coreExports.info(
-      `Built lookup map with ${issueMap.size} alert-to-issue mappings from ${existingIssues.length} Jira issues`
+      `Built lookup maps: ${issueMap.size} URL mappings, ${cveMap.size} CVE mappings from ${existingIssues.length} Jira issues`
     );
 
     let issuesCreated = 0;
     let issuesUpdated = 0;
+    let issuesReopened = 0;
+    let alertsGroupedByCve = 0;
     let processingErrors = 0;
     const processedAlerts = [];
 
@@ -58885,19 +59108,91 @@ async function run() {
             );
           }
         } else {
-          // Create new issue
-          const newIssue = await createJiraIssue(
-            jiraClient,
-            config.jira,
-            parsedAlert,
-            config.behavior.dryRun
-          );
-          issuesCreated++;
+          // Before creating a new issue, check if there's an existing issue for this CVE
+          // Use in-memory CVE map instead of making an API call
+          let cveIssue = null;
+          if (parsedAlert.cveId) {
+            cveIssue = cveMap.get(parsedAlert.cveId);
+            if (cveIssue) {
+              coreExports.info(
+                `Found existing CVE issue ${cveIssue.key} for ${parsedAlert.cveId} (in-memory lookup)`
+              );
+            }
+          }
 
-          if (!config.behavior.dryRun) {
+          if (cveIssue) {
+            // Found an existing issue for this CVE - append the URL
             coreExports.info(
-              `✅ Created Jira issue ${newIssue.key} for alert #${parsedAlert.id}`
+              `Found existing CVE issue ${cveIssue.key} for ${parsedAlert.cveId}. Appending alert URL.`
             );
+
+            // Append the alert URL to the existing issue
+            const appendResult = await appendAlertUrlToIssue(
+              jiraClient,
+              cveIssue.key,
+              parsedAlert.url,
+              config.behavior.dryRun
+            );
+
+            if (appendResult.updated) {
+              alertsGroupedByCve++;
+            }
+
+            // Check if the issue is closed and needs to be reopened
+            const issueStatus = cveIssue.fields?.status?.name || '';
+            const closeTransition =
+              config.behavior.closeTransition.toLowerCase();
+
+            // Check if status name contains or matches close transition
+            const isClosed =
+              issueStatus.toLowerCase().includes(closeTransition) ||
+              issueStatus.toLowerCase().includes('done') ||
+              issueStatus.toLowerCase().includes('closed') ||
+              issueStatus.toLowerCase().includes('resolved');
+
+            if (isClosed) {
+              coreExports.info(
+                `Issue ${cveIssue.key} is in closed state (${issueStatus}). Reopening.`
+              );
+
+              const reopenResult = await reopenJiraIssue(
+                jiraClient,
+                cveIssue.key,
+                config.behavior.reopenTransition,
+                `Reopening because a new Dependabot alert was found for this CVE: ${parsedAlert.url}`,
+                config.behavior.dryRun
+              );
+
+              if (reopenResult.reopened) {
+                issuesReopened++;
+              }
+            }
+          } else {
+            // No existing issue for this CVE - create new issue
+            const newIssue = await createJiraIssue(
+              jiraClient,
+              config.jira,
+              parsedAlert,
+              config.behavior.dryRun
+            );
+            issuesCreated++;
+
+            if (!config.behavior.dryRun) {
+              coreExports.info(
+                `✅ Created Jira issue ${newIssue.key} for alert #${parsedAlert.id}`
+              );
+
+              // Add the new issue to our in-memory maps so subsequent alerts can find it
+              issueMap.set(parsedAlert.url, newIssue);
+              if (parsedAlert.cveId) {
+                if (!cveMap.has(parsedAlert.cveId)) {
+                  cveMap.set(parsedAlert.cveId, newIssue);
+                  coreExports.debug(
+                    `Added ${newIssue.key} to CVE map for ${parsedAlert.cveId}`
+                  );
+                }
+              }
+            }
           }
         }
       } catch (error) {
@@ -58956,31 +59251,54 @@ async function run() {
               continue
             }
 
-            // Get the primary alert URL for this repo
-            const alertUrl = currentRepoUrls[0];
-            const alertId = extractAlertIdFromUrl(alertUrl);
-            if (!alertId) {
+            // Check status of ALL alerts from current repo
+            const alertStatuses = [];
+            for (const alertUrl of currentRepoUrls) {
+              const alertId = extractAlertIdFromUrl(alertUrl);
+              if (!alertId) {
+                coreExports.warning(
+                  `Could not extract alert ID from URL ${alertUrl} in issue ${issue.key}`
+                );
+                continue
+              }
+
+              const alertStatus = await getAlertStatus(owner, repo, alertId);
+              alertStatuses.push({ alertId, alertUrl, status: alertStatus });
+            }
+
+            if (alertStatuses.length === 0) {
               coreExports.warning(
-                `Could not extract alert ID from URL ${alertUrl} in issue ${issue.key}`
+                `No valid alert IDs found in issue ${issue.key}, skipping`
               );
               continue
             }
 
-            // Check status of the alert in GitHub
-            const alertStatus = await getAlertStatus(owner, repo, alertId);
+            // Check if ALL alerts are resolved
+            const allResolved = alertStatuses.every(
+              (a) =>
+                a.status === 'fixed' ||
+                a.status === 'dismissed' ||
+                a.status === 'not_found'
+            );
 
-            // Close issue if alert is resolved
-            if (
-              alertStatus === 'fixed' ||
-              alertStatus === 'dismissed' ||
-              alertStatus === 'not_found'
-            ) {
-              const reason =
-                alertStatus === 'not_found'
-                  ? 'Alert was deleted from GitHub'
-                  : `Alert was ${alertStatus} in GitHub`;
+            // Check if ANY alerts are still open
+            const anyOpen = alertStatuses.some((a) => a.status === 'open');
 
-              const closeComment = `${config.behavior.closeComment}\n\nReason: ${reason}`;
+            // Check if issue is currently closed
+            const issueStatus = issue.fields?.status?.name || '';
+            const closeTransition =
+              config.behavior.closeTransition.toLowerCase();
+            const isClosed =
+              issueStatus.toLowerCase().includes(closeTransition) ||
+              issueStatus.toLowerCase().includes('done') ||
+              issueStatus.toLowerCase().includes('closed') ||
+              issueStatus.toLowerCase().includes('resolved');
+
+            // Determine action based on issue state and alert statuses
+            if (allResolved && !isClosed) {
+              // All alerts resolved and issue is open -> Close it
+              const resolvedCount = alertStatuses.length;
+              const closeComment = `${config.behavior.closeComment}\n\nAll ${resolvedCount} associated Dependabot alert(s) for this repository have been resolved.`;
 
               await closeJiraIssue(
                 jiraClient,
@@ -58994,16 +59312,49 @@ async function run() {
 
               if (!config.behavior.dryRun) {
                 coreExports.info(
-                  `🔒 Closed Jira issue ${issue.key} (Alert #${alertId} was ${alertStatus})`
+                  `🔒 Closed Jira issue ${issue.key} (all ${resolvedCount} alerts resolved)`
                 );
               }
-            } else if (alertStatus === 'open') {
-              coreExports.debug(
-                `Alert #${alertId} is still open, keeping Jira issue ${issue.key} open`
+            } else if (anyOpen && isClosed) {
+              // Some alerts still open but issue is closed -> Reopen it
+              const openAlerts = alertStatuses.filter(
+                (a) => a.status === 'open'
               );
-            } else {
-              coreExports.warning(
-                `Unknown status '${alertStatus}' for alert #${alertId}, keeping issue ${issue.key} open`
+              const openAlertIds = openAlerts
+                .map((a) => `#${a.alertId}`)
+                .join(', ');
+
+              const reopenComment = `Reopening issue because it still has open Dependabot alerts for this repository: ${openAlertIds}`;
+
+              const reopenResult = await reopenJiraIssue(
+                jiraClient,
+                issue.key,
+                config.behavior.reopenTransition,
+                reopenComment,
+                config.behavior.dryRun
+              );
+
+              if (reopenResult.reopened) {
+                issuesReopened++;
+
+                if (!config.behavior.dryRun) {
+                  coreExports.info(
+                    `🔓 Reopened Jira issue ${issue.key} (${openAlerts.length} alert(s) still open)`
+                  );
+                }
+              }
+            } else if (!allResolved && !isClosed) {
+              // Some alerts unresolved and issue is open -> Keep open
+              const openCount = alertStatuses.filter(
+                (a) => a.status === 'open'
+              ).length;
+              coreExports.debug(
+                `Issue ${issue.key} has ${openCount} open alert(s), keeping open`
+              );
+            } else if (allResolved && isClosed) {
+              // All resolved and already closed -> No action needed
+              coreExports.debug(
+                `Issue ${issue.key} is already closed and all alerts resolved`
               );
             }
           } catch (error) {
@@ -59027,13 +59378,15 @@ async function run() {
 
     // Generate summary
     const summary = config.behavior.dryRun
-      ? `DRY RUN: Would create ${issuesCreated} issues, update ${issuesUpdated} issues, and close ${issuesClosed} issues`
-      : `Created ${issuesCreated} new issues, updated ${issuesUpdated} existing issues, and closed ${issuesClosed} resolved issues`;
+      ? `DRY RUN: Would create ${issuesCreated} issues, update ${issuesUpdated} issues, group ${alertsGroupedByCve} alerts by CVE, reopen ${issuesReopened} issues, and close ${issuesClosed} issues`
+      : `Created ${issuesCreated} new issues, updated ${issuesUpdated} existing issues, grouped ${alertsGroupedByCve} alerts by CVE, reopened ${issuesReopened} closed issues, and closed ${issuesClosed} resolved issues`;
 
     coreExports.info(`\n📊 Summary:`);
     coreExports.info(`- Alerts processed: ${processedAlerts.length}`);
     coreExports.info(`- Issues created: ${issuesCreated}`);
     coreExports.info(`- Issues updated: ${issuesUpdated}`);
+    coreExports.info(`- Alerts grouped by CVE: ${alertsGroupedByCve}`);
+    coreExports.info(`- Issues reopened: ${issuesReopened}`);
     coreExports.info(`- Issues closed: ${issuesClosed}`);
 
     if (config.behavior.dryRun) {
@@ -59043,6 +59396,8 @@ async function run() {
     // Set outputs
     coreExports.setOutput('issues-created', issuesCreated.toString());
     coreExports.setOutput('issues-updated', issuesUpdated.toString());
+    coreExports.setOutput('alerts-grouped-by-cve', alertsGroupedByCve.toString());
+    coreExports.setOutput('issues-reopened', issuesReopened.toString());
     coreExports.setOutput('issues-closed', issuesClosed.toString());
     coreExports.setOutput('alerts-processed', processedAlerts.length.toString());
     coreExports.setOutput('summary', summary);

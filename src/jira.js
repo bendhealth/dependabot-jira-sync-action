@@ -807,6 +807,33 @@ export function extractAllAlertUrlsFromIssue(issue) {
 }
 
 /**
+ * Extract CVE ID from a Jira issue description
+ * @param {Object} issue - Jira issue object
+ * @returns {string|null} CVE ID or null if not found
+ */
+export function extractCveIdFromIssue(issue) {
+  // Jira API often nests fields under 'fields' object
+  const description = issue.description || issue.fields?.description
+
+  if (!description) {
+    return null
+  }
+
+  // Extract CVE ID from the description (ADF format)
+  // Pattern: CVE-YYYY-NNNNN (e.g., CVE-2024-12345)
+  const descriptionStr = JSON.stringify(description)
+  const cveMatch = descriptionStr.match(/CVE-\d{4}-\d{4,}/i)
+
+  if (cveMatch) {
+    const cveId = cveMatch[0].toUpperCase()
+    core.debug(`Extracted CVE ID ${cveId} from issue ${issue.key}`)
+    return cveId
+  }
+
+  return null
+}
+
+/**
  * Extract alert ID from a GitHub Dependabot URL
  * @param {string} url - GitHub alert URL (e.g., https://github.com/owner/repo/security/dependabot/42)
  * @returns {string|null} Alert ID or null if cannot be extracted
@@ -893,6 +920,185 @@ export async function closeJiraIssue(
     return { closed: true }
   } catch (error) {
     core.error(`Failed to close Jira issue ${issueKey}: ${error.message}`)
+    throw error
+  }
+}
+
+/**
+ * Append a GitHub alert URL to an existing Jira issue description
+ * @param {Object} jiraClient - Axios instance for Jira API
+ * @param {string} issueKey - Jira issue key
+ * @param {string} alertUrl - GitHub Dependabot alert URL to append
+ * @param {boolean} dryRun - Whether this is a dry run
+ * @returns {Promise<Object>} Update result
+ */
+export async function appendAlertUrlToIssue(
+  jiraClient,
+  issueKey,
+  alertUrl,
+  dryRun = false
+) {
+  if (dryRun) {
+    core.info(
+      `[DRY RUN] Would append alert URL to issue ${issueKey}: ${alertUrl}`
+    )
+    return { updated: false, dryRun: true }
+  }
+
+  try {
+    // Fetch current issue to get the description
+    const issueResponse = await jiraClient.get(`/issue/${issueKey}`, {
+      params: {
+        fields: 'description'
+      }
+    })
+
+    const currentDescription = issueResponse.data.fields.description || {
+      type: 'doc',
+      version: 1,
+      content: []
+    }
+
+    // Check if the URL is already in the description
+    const descriptionStr = JSON.stringify(currentDescription)
+    if (descriptionStr.includes(alertUrl)) {
+      core.info(
+        `Alert URL already exists in issue ${issueKey}, skipping append`
+      )
+      return { updated: false, alreadyExists: true }
+    }
+
+    // Append the new alert URL to the description
+    const newContent = [
+      ...currentDescription.content,
+      {
+        type: 'paragraph',
+        content: []
+      },
+      {
+        type: 'paragraph',
+        content: [
+          {
+            type: 'text',
+            text: 'Additional GitHub Alert URL: ',
+            marks: [{ type: 'strong' }]
+          },
+          {
+            type: 'text',
+            text: alertUrl,
+            marks: [
+              {
+                type: 'link',
+                attrs: {
+                  href: alertUrl
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+
+    const updatedDescription = {
+      type: 'doc',
+      version: 1,
+      content: newContent
+    }
+
+    // Update the issue description
+    await jiraClient.put(`/issue/${issueKey}`, {
+      fields: {
+        description: updatedDescription
+      }
+    })
+
+    core.info(`Appended alert URL to issue ${issueKey}: ${alertUrl}`)
+    return { updated: true }
+  } catch (error) {
+    core.error(
+      `Failed to append alert URL to issue ${issueKey}: ${error.message}`
+    )
+    throw error
+  }
+}
+
+/**
+ * Reopen a closed Jira issue by transitioning it to an open state
+ * @param {Object} jiraClient - Axios instance for Jira API
+ * @param {string} issueKey - Jira issue key
+ * @param {string} reopenTransition - Transition name to reopen (e.g., "Reopen", "To Do")
+ * @param {string} comment - Comment to add when reopening
+ * @param {boolean} dryRun - Whether this is a dry run
+ * @returns {Promise<Object>} Result of the operation
+ */
+export async function reopenJiraIssue(
+  jiraClient,
+  issueKey,
+  reopenTransition,
+  comment,
+  dryRun = false
+) {
+  if (dryRun) {
+    core.info(
+      `[DRY RUN] Would reopen issue ${issueKey} using transition "${reopenTransition}"`
+    )
+    return { reopened: false, dryRun: true }
+  }
+
+  try {
+    // Get available transitions for this issue
+    const transitionsResponse = await jiraClient.get(
+      `/issue/${issueKey}/transitions`
+    )
+    const availableTransitions = transitionsResponse.data.transitions || []
+
+    // Find the transition by name (case-insensitive)
+    const targetTransition = availableTransitions.find(
+      (t) => t.name.toLowerCase() === reopenTransition.toLowerCase()
+    )
+
+    if (!targetTransition) {
+      const availableNames = availableTransitions.map((t) => t.name).join(', ')
+      core.warning(
+        `Transition "${reopenTransition}" not available for issue ${issueKey}. Available transitions: ${availableNames}. Issue may already be open.`
+      )
+      return { reopened: false, transitionNotAvailable: true }
+    }
+
+    // Add comment first
+    if (comment) {
+      await jiraClient.post(`/issue/${issueKey}/comment`, {
+        body: {
+          type: 'doc',
+          version: 1,
+          content: [
+            {
+              type: 'paragraph',
+              content: [
+                {
+                  type: 'text',
+                  text: comment
+                }
+              ]
+            }
+          ]
+        }
+      })
+    }
+
+    // Perform the transition
+    await jiraClient.post(`/issue/${issueKey}/transitions`, {
+      transition: {
+        id: targetTransition.id
+      }
+    })
+
+    core.info(
+      `Reopened Jira issue: ${issueKey} using transition "${reopenTransition}"`
+    )
+    return { reopened: true }
+  } catch (error) {
+    core.error(`Failed to reopen Jira issue ${issueKey}: ${error.message}`)
     throw error
   }
 }

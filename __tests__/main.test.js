@@ -29,8 +29,11 @@ const mockJira = {
   findDependabotIssues: jest.fn(),
   extractAlertUrlFromIssue: jest.fn(),
   extractAllAlertUrlsFromIssue: jest.fn(),
+  extractCveIdFromIssue: jest.fn(),
   extractAlertIdFromUrl: jest.fn(),
-  closeJiraIssue: jest.fn()
+  closeJiraIssue: jest.fn(),
+  appendAlertUrlToIssue: jest.fn(),
+  reopenJiraIssue: jest.fn()
 }
 
 // Mock the modules before importing the main function
@@ -94,7 +97,10 @@ describe('Dependabot Jira Sync', () => {
 
     mockJira.findDependabotIssues.mockResolvedValue([]) // No existing issues by default
     mockJira.extractAlertUrlFromIssue.mockReturnValue(null)
+    mockJira.extractCveIdFromIssue.mockReturnValue(null) // No CVE by default
     mockJira.extractAlertIdFromUrl.mockReturnValue(null)
+    mockJira.appendAlertUrlToIssue.mockResolvedValue({ updated: true })
+    mockJira.reopenJiraIssue.mockResolvedValue({ reopened: true })
     mockJira.createJiraIssue.mockResolvedValue({ key: 'TEST-123' })
     mockJira.updateJiraIssue.mockResolvedValue({ updated: true })
   })
@@ -321,10 +327,17 @@ describe('Dependabot Jira Sync', () => {
     // Second call: fetch open issues for auto-close
     mockJira.findDependabotIssues
       .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([{ key: 'TEST-1' }])
+      .mockResolvedValueOnce([
+        {
+          key: 'TEST-1',
+          fields: {
+            status: { name: 'To Do' }
+          }
+        }
+      ])
     mockJira.createJiraIssue.mockResolvedValue({ key: 'TEST-7' })
 
-    // Auto-close path
+    // Auto-close path - issue has status field
     mockJira.extractAllAlertUrlsFromIssue.mockReturnValue([
       'https://github.com/test-owner/test-repo/security/dependabot/7'
     ])
@@ -338,10 +351,337 @@ describe('Dependabot Jira Sync', () => {
       expect.any(Object),
       'TEST-1',
       'Done',
-      expect.stringContaining('Alert was fixed'),
+      expect.stringContaining('All 1 associated Dependabot alert(s)'),
       false
     )
     expect(mockCore.setOutput).toHaveBeenCalledWith('issues-closed', '1')
+  })
+
+  it('should NOT auto-close issue when some alerts from current repo are still open', async () => {
+    mockCore.getBooleanInput.mockImplementation((name) => {
+      if (name === 'auto-close-resolved') return true
+      return false
+    })
+
+    const mockAlert = {
+      number: 7,
+      security_advisory: { summary: 'Test', severity: 'high' },
+      dependency: { package: { name: 'pkg' } },
+      html_url: 'https://example.com',
+      state: 'open'
+    }
+
+    const parsedAlert = { id: 7, title: 'Test', severity: 'high' }
+
+    mockGithub.getDependabotAlerts.mockResolvedValue([mockAlert])
+    mockGithub.parseAlert.mockReturnValue(parsedAlert)
+    mockJira.findDependabotIssues
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          key: 'TEST-1',
+          fields: {
+            status: { name: 'To Do' }
+          }
+        }
+      ])
+    mockJira.createJiraIssue.mockResolvedValue({ key: 'TEST-7' })
+
+    // Issue has TWO alerts from current repo
+    mockJira.extractAllAlertUrlsFromIssue.mockReturnValue([
+      'https://github.com/test-owner/test-repo/security/dependabot/7',
+      'https://github.com/test-owner/test-repo/security/dependabot/8'
+    ])
+    mockJira.extractAlertIdFromUrl
+      .mockReturnValueOnce('7')
+      .mockReturnValueOnce('8')
+    // Alert 7 is fixed, but alert 8 is still open
+    mockGithub.getAlertStatus
+      .mockResolvedValueOnce('fixed')
+      .mockResolvedValueOnce('open')
+
+    await run()
+
+    // Should NOT close because alert 8 is still open
+    expect(mockJira.closeJiraIssue).not.toHaveBeenCalled()
+    expect(mockCore.setOutput).toHaveBeenCalledWith('issues-closed', '0')
+  })
+
+  it('should auto-close issue only when ALL alerts from current repo are resolved', async () => {
+    mockCore.getBooleanInput.mockImplementation((name) => {
+      if (name === 'auto-close-resolved') return true
+      return false
+    })
+
+    const mockAlert = {
+      number: 7,
+      security_advisory: { summary: 'Test', severity: 'high' },
+      dependency: { package: { name: 'pkg' } },
+      html_url: 'https://example.com',
+      state: 'open'
+    }
+
+    const parsedAlert = { id: 7, title: 'Test', severity: 'high' }
+
+    mockGithub.getDependabotAlerts.mockResolvedValue([mockAlert])
+    mockGithub.parseAlert.mockReturnValue(parsedAlert)
+    mockJira.findDependabotIssues
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          key: 'TEST-1',
+          fields: {
+            status: { name: 'To Do' }
+          }
+        }
+      ])
+    mockJira.createJiraIssue.mockResolvedValue({ key: 'TEST-7' })
+
+    // Issue has TWO alerts from current repo
+    mockJira.extractAllAlertUrlsFromIssue.mockReturnValue([
+      'https://github.com/test-owner/test-repo/security/dependabot/7',
+      'https://github.com/test-owner/test-repo/security/dependabot/8'
+    ])
+    mockJira.extractAlertIdFromUrl
+      .mockReturnValueOnce('7')
+      .mockReturnValueOnce('8')
+    // Both alerts are fixed
+    mockGithub.getAlertStatus
+      .mockResolvedValueOnce('fixed')
+      .mockResolvedValueOnce('fixed')
+    mockJira.closeJiraIssue.mockResolvedValue({ closed: true })
+
+    await run()
+
+    // Should close because both alerts are resolved
+    expect(mockJira.closeJiraIssue).toHaveBeenCalledWith(
+      expect.any(Object),
+      'TEST-1',
+      'Done',
+      expect.stringContaining('All 2 associated Dependabot alert(s)'),
+      false
+    )
+    expect(mockCore.setOutput).toHaveBeenCalledWith('issues-closed', '1')
+  })
+
+  it('should reopen closed issue when alerts from current repo are still open', async () => {
+    mockCore.getBooleanInput.mockImplementation((name) => {
+      if (name === 'auto-close-resolved') return true
+      return false
+    })
+
+    const mockAlert = {
+      number: 7,
+      security_advisory: { summary: 'Test', severity: 'high' },
+      dependency: { package: { name: 'pkg' } },
+      html_url: 'https://example.com',
+      state: 'open'
+    }
+
+    const parsedAlert = { id: 7, title: 'Test', severity: 'high' }
+
+    mockGithub.getDependabotAlerts.mockResolvedValue([mockAlert])
+    mockGithub.parseAlert.mockReturnValue(parsedAlert)
+    mockJira.findDependabotIssues
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          key: 'TEST-1',
+          fields: {
+            status: { name: 'Done' } // Issue is CLOSED
+          }
+        }
+      ])
+    mockJira.createJiraIssue.mockResolvedValue({ key: 'TEST-7' })
+
+    // Issue has an alert from current repo
+    mockJira.extractAllAlertUrlsFromIssue.mockReturnValue([
+      'https://github.com/test-owner/test-repo/security/dependabot/7'
+    ])
+    mockJira.extractAlertIdFromUrl.mockReturnValue('7')
+    // Alert is still OPEN
+    mockGithub.getAlertStatus.mockResolvedValue('open')
+    mockJira.reopenJiraIssue.mockResolvedValue({ reopened: true })
+
+    await run()
+
+    // Should reopen because alert is still open but issue is closed
+    expect(mockJira.reopenJiraIssue).toHaveBeenCalledWith(
+      expect.any(Object),
+      'TEST-1',
+      'Reopen',
+      expect.stringContaining('still has open Dependabot alerts'),
+      false
+    )
+    expect(mockCore.setOutput).toHaveBeenCalledWith('issues-reopened', '1')
+  })
+
+  it('should group alerts by CVE using in-memory lookup instead of API call', async () => {
+    const mockAlert1 = {
+      number: 1,
+      security_advisory: {
+        summary: 'CVE-2024-12345',
+        severity: 'high',
+        cve_id: 'CVE-2024-12345'
+      },
+      dependency: { package: { name: 'pkg' } },
+      html_url: 'https://github.com/test-owner/test-repo/security/dependabot/1',
+      state: 'open'
+    }
+
+    const mockAlert2 = {
+      number: 2,
+      security_advisory: {
+        summary: 'CVE-2024-12345',
+        severity: 'high',
+        cve_id: 'CVE-2024-12345'
+      },
+      dependency: { package: { name: 'other-pkg' } },
+      html_url: 'https://github.com/test-owner/test-repo/security/dependabot/2',
+      state: 'open'
+    }
+
+    const parsedAlert1 = {
+      id: 1,
+      title: 'CVE-2024-12345',
+      severity: 'high',
+      cveId: 'CVE-2024-12345',
+      url: 'https://github.com/test-owner/test-repo/security/dependabot/1'
+    }
+
+    const parsedAlert2 = {
+      id: 2,
+      title: 'CVE-2024-12345',
+      severity: 'high',
+      cveId: 'CVE-2024-12345',
+      url: 'https://github.com/test-owner/test-repo/security/dependabot/2'
+    }
+
+    mockGithub.getDependabotAlerts.mockResolvedValue([mockAlert1, mockAlert2])
+    mockGithub.parseAlert
+      .mockReturnValueOnce(parsedAlert1)
+      .mockReturnValueOnce(parsedAlert2)
+
+    // First alert creates an issue
+    mockJira.findDependabotIssues.mockResolvedValue([])
+    mockJira.createJiraIssue.mockResolvedValue({
+      key: 'TEST-1',
+      fields: {
+        description: {
+          type: 'doc',
+          content: [
+            {
+              type: 'paragraph',
+              content: [{ type: 'text', text: 'CVE-2024-12345' }]
+            }
+          ]
+        }
+      }
+    })
+    mockJira.extractCveIdFromIssue.mockReturnValue('CVE-2024-12345')
+    mockJira.appendAlertUrlToIssue.mockResolvedValue({ updated: true })
+
+    await run()
+
+    // Should create one issue
+    expect(mockJira.createJiraIssue).toHaveBeenCalledTimes(1)
+
+    // Should append the second alert to the first issue (in-memory lookup)
+    expect(mockJira.appendAlertUrlToIssue).toHaveBeenCalledWith(
+      expect.any(Object),
+      'TEST-1',
+      'https://github.com/test-owner/test-repo/security/dependabot/2',
+      false
+    )
+
+    expect(mockCore.setOutput).toHaveBeenCalledWith('issues-created', '1')
+    expect(mockCore.setOutput).toHaveBeenCalledWith(
+      'alerts-grouped-by-cve',
+      '1'
+    )
+  })
+
+  it('should use existing CVE issues from initial fetch instead of making API calls', async () => {
+    const mockAlert = {
+      number: 2,
+      security_advisory: {
+        summary: 'CVE-2024-12345',
+        severity: 'high',
+        cve_id: 'CVE-2024-12345'
+      },
+      dependency: { package: { name: 'pkg' } },
+      html_url: 'https://github.com/test-owner/test-repo/security/dependabot/2',
+      state: 'open'
+    }
+
+    const parsedAlert = {
+      id: 2,
+      title: 'CVE-2024-12345',
+      severity: 'high',
+      cveId: 'CVE-2024-12345',
+      url: 'https://github.com/test-owner/test-repo/security/dependabot/2'
+    }
+
+    mockGithub.getDependabotAlerts.mockResolvedValue([mockAlert])
+    mockGithub.parseAlert.mockReturnValue(parsedAlert)
+
+    // Existing issue with same CVE (different alert URL)
+    const existingIssue = {
+      key: 'TEST-100',
+      fields: {
+        description: {
+          type: 'doc',
+          version: 1,
+          content: [
+            {
+              type: 'paragraph',
+              content: [
+                {
+                  type: 'text',
+                  text: 'CVE ID: CVE-2024-12345'
+                }
+              ]
+            },
+            {
+              type: 'paragraph',
+              content: [
+                {
+                  type: 'text',
+                  text: 'https://github.com/test-owner/test-repo/security/dependabot/1'
+                }
+              ]
+            }
+          ]
+        },
+        status: { name: 'To Do' }
+      }
+    }
+
+    mockJira.findDependabotIssues.mockResolvedValue([existingIssue])
+    mockJira.extractAlertUrlFromIssue.mockReturnValue(
+      'https://github.com/test-owner/test-repo/security/dependabot/1'
+    )
+    mockJira.extractCveIdFromIssue.mockReturnValue('CVE-2024-12345')
+    mockJira.appendAlertUrlToIssue.mockResolvedValue({ updated: true })
+
+    await run()
+
+    // Should NOT create a new issue
+    expect(mockJira.createJiraIssue).not.toHaveBeenCalled()
+
+    // Should append to existing issue (found via in-memory CVE lookup)
+    expect(mockJira.appendAlertUrlToIssue).toHaveBeenCalledWith(
+      expect.any(Object),
+      'TEST-100',
+      'https://github.com/test-owner/test-repo/security/dependabot/2',
+      false
+    )
+
+    expect(mockCore.setOutput).toHaveBeenCalledWith('issues-created', '0')
+    expect(mockCore.setOutput).toHaveBeenCalledWith(
+      'alerts-grouped-by-cve',
+      '1'
+    )
   })
 
   it('validates config inputs and fails fast on invalid values', async () => {
