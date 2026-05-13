@@ -12,7 +12,7 @@ import {
   findDependabotIssues,
   extractAlertUrlFromIssue,
   extractAllAlertUrlsFromIssue,
-  extractCveIdFromIssue,
+  extractGhsaIdFromIssue,
   extractAlertIdFromUrl,
   closeJiraIssue,
   appendAlertUrlToIssue,
@@ -152,9 +152,10 @@ export async function run() {
 
     // Build lookup maps:
     // 1. alertUrl -> Jira issue (for matching by URL)
-    // 2. cveId -> Jira issue (for CVE-based grouping)
+    // 2. ghsaId -> Jira issue (for GHSA-based grouping)
+    // Note: All Dependabot alerts have a GHSA ID, so we only group by GHSA
     const issueMap = new Map()
-    const cveMap = new Map()
+    const ghsaMap = new Map()
 
     for (const issue of existingIssues) {
       const alertUrl = extractAlertUrlFromIssue(issue)
@@ -163,19 +164,19 @@ export async function run() {
         core.debug(`Mapped alert URL ${alertUrl} to Jira issue ${issue.key}`)
       }
 
-      // Also map by CVE ID if present
-      const cveId = extractCveIdFromIssue(issue)
-      if (cveId) {
-        // CVE might map to multiple issues, but we'll use the first one found
-        if (!cveMap.has(cveId)) {
-          cveMap.set(cveId, issue)
-          core.debug(`Mapped CVE ID ${cveId} to Jira issue ${issue.key}`)
+      // Map by GHSA ID for grouping alerts with the same vulnerability
+      const ghsaId = extractGhsaIdFromIssue(issue)
+      if (ghsaId) {
+        // GHSA might map to multiple issues, but we'll use the first one found
+        if (!ghsaMap.has(ghsaId)) {
+          ghsaMap.set(ghsaId, issue)
+          core.debug(`Mapped GHSA ID ${ghsaId} to Jira issue ${issue.key}`)
         }
       }
     }
 
     core.info(
-      `Built lookup maps: ${issueMap.size} URL mappings, ${cveMap.size} CVE mappings from ${existingIssues.length} Jira issues`
+      `Built lookup maps: ${issueMap.size} URL mappings, ${ghsaMap.size} GHSA mappings from ${existingIssues.length} Jira issues`
     )
 
     let issuesCreated = 0
@@ -212,28 +213,28 @@ export async function run() {
             )
           }
         } else {
-          // Before creating a new issue, check if there's an existing issue for this CVE
-          // Use in-memory CVE map instead of making an API call
-          let cveIssue = null
-          if (parsedAlert.cveId) {
-            cveIssue = cveMap.get(parsedAlert.cveId)
-            if (cveIssue) {
+          // Before creating a new issue, check if there's an existing issue for this GHSA
+          // All Dependabot alerts have a GHSA ID, so we only need to check that
+          let ghsaIssue = null
+          if (parsedAlert.ghsaId) {
+            ghsaIssue = ghsaMap.get(parsedAlert.ghsaId)
+            if (ghsaIssue) {
               core.info(
-                `Found existing CVE issue ${cveIssue.key} for ${parsedAlert.cveId} (in-memory lookup)`
+                `Found existing GHSA issue ${ghsaIssue.key} for ${parsedAlert.ghsaId} (in-memory lookup)`
               )
             }
           }
 
-          if (cveIssue) {
-            // Found an existing issue for this CVE - append the URL
+          if (ghsaIssue) {
+            // Found an existing issue for this GHSA - append the URL
             core.info(
-              `Found existing CVE issue ${cveIssue.key} for ${parsedAlert.cveId}. Appending alert URL.`
+              `Found existing GHSA issue ${ghsaIssue.key} for ${parsedAlert.ghsaId}. Appending alert URL.`
             )
 
             // Append the alert URL to the existing issue
             const appendResult = await appendAlertUrlToIssue(
               jiraClient,
-              cveIssue.key,
+              ghsaIssue.key,
               parsedAlert.url,
               config.behavior.dryRun
             )
@@ -243,7 +244,7 @@ export async function run() {
             }
 
             // Check if the issue is closed and needs to be reopened
-            const issueStatus = cveIssue.fields?.status?.name || ''
+            const issueStatus = ghsaIssue.fields?.status?.name || ''
             const closeTransition =
               config.behavior.closeTransition.toLowerCase()
 
@@ -256,14 +257,14 @@ export async function run() {
 
             if (isClosed) {
               core.info(
-                `Issue ${cveIssue.key} is in closed state (${issueStatus}). Reopening.`
+                `Issue ${ghsaIssue.key} is in closed state (${issueStatus}). Reopening.`
               )
 
               const reopenResult = await reopenJiraIssue(
                 jiraClient,
-                cveIssue.key,
+                ghsaIssue.key,
                 config.behavior.reopenTransition,
-                `Reopening because a new Dependabot alert was found for this CVE: ${parsedAlert.url}`,
+                `Reopening because a new Dependabot alert was found for this GHSA: ${parsedAlert.url}`,
                 config.behavior.dryRun
               )
 
@@ -272,29 +273,29 @@ export async function run() {
               }
             }
           } else {
-            // No existing issue for this CVE - create new issue
+            // No existing issue for this GHSA - create new issue
             const newIssue = await createJiraIssue(
               jiraClient,
               config.jira,
               parsedAlert,
               config.behavior.dryRun
             )
+            // If createJiraIssue threw an error, execution won't reach here
+            // Only update our state if the issue was successfully created (or dry run succeeded)
             issuesCreated++
 
-	    if (!config.behavior.dryRun) {
-              core.info(
-		`✅ Created Jira issue ${newIssue.key} for alert #${parsedAlert.id}`
-              )
-	    }
+            core.info(
+              `✅ Created Jira issue ${newIssue.key} for alert #${parsedAlert.id}`
+            )
 
             // Add the new issue to our in-memory maps so subsequent alerts can find it
-            // This happens for both dry runs and real runs to ensure CVE grouping works correctly
+            // This happens for both dry runs and real runs to ensure grouping works correctly
             issueMap.set(parsedAlert.url, newIssue)
-            if (parsedAlert.cveId) {
-              if (!cveMap.has(parsedAlert.cveId)) {
-                cveMap.set(parsedAlert.cveId, newIssue)
+            if (parsedAlert.ghsaId) {
+              if (!ghsaMap.has(parsedAlert.ghsaId)) {
+                ghsaMap.set(parsedAlert.ghsaId, newIssue)
                 core.debug(
-                  `Added ${newIssue.key} to CVE map for ${parsedAlert.cveId}`
+                  `Added ${newIssue.key} to GHSA map for ${parsedAlert.ghsaId}`
                 )
               }
             }

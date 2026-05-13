@@ -29,7 +29,7 @@ const mockJira = {
   findDependabotIssues: jest.fn(),
   extractAlertUrlFromIssue: jest.fn(),
   extractAllAlertUrlsFromIssue: jest.fn(),
-  extractCveIdFromIssue: jest.fn(),
+  extractGhsaIdFromIssue: jest.fn(),
   extractAlertIdFromUrl: jest.fn(),
   closeJiraIssue: jest.fn(),
   appendAlertUrlToIssue: jest.fn(),
@@ -97,7 +97,7 @@ describe('Dependabot Jira Sync', () => {
 
     mockJira.findDependabotIssues.mockResolvedValue([]) // No existing issues by default
     mockJira.extractAlertUrlFromIssue.mockReturnValue(null)
-    mockJira.extractCveIdFromIssue.mockReturnValue(null) // No CVE by default
+    mockJira.extractGhsaIdFromIssue.mockReturnValue(null) // No GHSA by default
     mockJira.extractAlertIdFromUrl.mockReturnValue(null)
     mockJira.appendAlertUrlToIssue.mockResolvedValue({ updated: true })
     mockJira.reopenJiraIssue.mockResolvedValue({ reopened: true })
@@ -516,13 +516,13 @@ describe('Dependabot Jira Sync', () => {
     expect(mockCore.setOutput).toHaveBeenCalledWith('issues-reopened', '1')
   })
 
-  it('should group alerts by CVE using in-memory lookup instead of API call', async () => {
+  it('should group alerts by GHSA using in-memory lookup instead of API call', async () => {
     const mockAlert1 = {
       number: 1,
       security_advisory: {
-        summary: 'CVE-2024-12345',
+        summary: 'GHSA-xxxx-yyyy-zzzz',
         severity: 'high',
-        cve_id: 'CVE-2024-12345'
+        ghsa_id: 'GHSA-xxxx-yyyy-zzzz'
       },
       dependency: { package: { name: 'pkg' } },
       html_url: 'https://github.com/test-owner/test-repo/security/dependabot/1',
@@ -532,9 +532,9 @@ describe('Dependabot Jira Sync', () => {
     const mockAlert2 = {
       number: 2,
       security_advisory: {
-        summary: 'CVE-2024-12345',
+        summary: 'GHSA-xxxx-yyyy-zzzz',
         severity: 'high',
-        cve_id: 'CVE-2024-12345'
+        ghsa_id: 'GHSA-xxxx-yyyy-zzzz'
       },
       dependency: { package: { name: 'other-pkg' } },
       html_url: 'https://github.com/test-owner/test-repo/security/dependabot/2',
@@ -543,17 +543,17 @@ describe('Dependabot Jira Sync', () => {
 
     const parsedAlert1 = {
       id: 1,
-      title: 'CVE-2024-12345',
+      title: 'GHSA-xxxx-yyyy-zzzz',
       severity: 'high',
-      cveId: 'CVE-2024-12345',
+      ghsaId: 'GHSA-xxxx-yyyy-zzzz',
       url: 'https://github.com/test-owner/test-repo/security/dependabot/1'
     }
 
     const parsedAlert2 = {
       id: 2,
-      title: 'CVE-2024-12345',
+      title: 'GHSA-xxxx-yyyy-zzzz',
       severity: 'high',
-      cveId: 'CVE-2024-12345',
+      ghsaId: 'GHSA-xxxx-yyyy-zzzz',
       url: 'https://github.com/test-owner/test-repo/security/dependabot/2'
     }
 
@@ -572,13 +572,13 @@ describe('Dependabot Jira Sync', () => {
           content: [
             {
               type: 'paragraph',
-              content: [{ type: 'text', text: 'CVE-2024-12345' }]
+              content: [{ type: 'text', text: 'GHSA-xxxx-yyyy-zzzz' }]
             }
           ]
         }
       }
     })
-    mockJira.extractCveIdFromIssue.mockReturnValue('CVE-2024-12345')
+    mockJira.extractGhsaIdFromIssue.mockReturnValue('GHSA-xxxx-yyyy-zzzz')
     mockJira.appendAlertUrlToIssue.mockResolvedValue({ updated: true })
 
     await run()
@@ -601,13 +601,13 @@ describe('Dependabot Jira Sync', () => {
     )
   })
 
-  it('should use existing CVE issues from initial fetch instead of making API calls', async () => {
+  it('should use existing GHSA issues from initial fetch instead of making API calls', async () => {
     const mockAlert = {
       number: 2,
       security_advisory: {
-        summary: 'CVE-2024-12345',
+        summary: 'GHSA-aaaa-bbbb-cccc',
         severity: 'high',
-        cve_id: 'CVE-2024-12345'
+        ghsa_id: 'GHSA-aaaa-bbbb-cccc'
       },
       dependency: { package: { name: 'pkg' } },
       html_url: 'https://github.com/test-owner/test-repo/security/dependabot/2',
@@ -616,16 +616,16 @@ describe('Dependabot Jira Sync', () => {
 
     const parsedAlert = {
       id: 2,
-      title: 'CVE-2024-12345',
+      title: 'GHSA-aaaa-bbbb-cccc',
       severity: 'high',
-      cveId: 'CVE-2024-12345',
+      ghsaId: 'GHSA-aaaa-bbbb-cccc',
       url: 'https://github.com/test-owner/test-repo/security/dependabot/2'
     }
 
     mockGithub.getDependabotAlerts.mockResolvedValue([mockAlert])
     mockGithub.parseAlert.mockReturnValue(parsedAlert)
 
-    // Existing issue with same CVE (different alert URL)
+    // Existing issue with same GHSA (different alert URL)
     const existingIssue = {
       key: 'TEST-100',
       fields: {
@@ -638,7 +638,7 @@ describe('Dependabot Jira Sync', () => {
               content: [
                 {
                   type: 'text',
-                  text: 'CVE ID: CVE-2024-12345'
+                  text: 'GHSA ID: GHSA-aaaa-bbbb-cccc'
                 }
               ]
             },
@@ -661,7 +661,7 @@ describe('Dependabot Jira Sync', () => {
     mockJira.extractAlertUrlFromIssue.mockReturnValue(
       'https://github.com/test-owner/test-repo/security/dependabot/1'
     )
-    mockJira.extractCveIdFromIssue.mockReturnValue('CVE-2024-12345')
+    mockJira.extractGhsaIdFromIssue.mockReturnValue('GHSA-aaaa-bbbb-cccc')
     mockJira.appendAlertUrlToIssue.mockResolvedValue({ updated: true })
 
     await run()
@@ -669,7 +669,7 @@ describe('Dependabot Jira Sync', () => {
     // Should NOT create a new issue
     expect(mockJira.createJiraIssue).not.toHaveBeenCalled()
 
-    // Should append to existing issue (found via in-memory CVE lookup)
+    // Should append to existing issue (found via in-memory GHSA lookup)
     expect(mockJira.appendAlertUrlToIssue).toHaveBeenCalledWith(
       expect.any(Object),
       'TEST-100',

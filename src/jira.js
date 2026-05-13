@@ -807,11 +807,11 @@ export function extractAllAlertUrlsFromIssue(issue) {
 }
 
 /**
- * Extract CVE ID from a Jira issue description
+ * Extract GHSA ID from a Jira issue description
  * @param {Object} issue - Jira issue object
- * @returns {string|null} CVE ID or null if not found
+ * @returns {string|null} GHSA ID or null if not found
  */
-export function extractCveIdFromIssue(issue) {
+export function extractGhsaIdFromIssue(issue) {
   // Jira API often nests fields under 'fields' object
   const description = issue.description || issue.fields?.description
 
@@ -819,15 +819,17 @@ export function extractCveIdFromIssue(issue) {
     return null
   }
 
-  // Extract CVE ID from the description (ADF format)
-  // Pattern: CVE-YYYY-NNNNN (e.g., CVE-2024-12345)
+  // Extract GHSA ID from the description (ADF format)
+  // Pattern: GHSA-xxxx-xxxx-xxxx (e.g., GHSA-1234-5678-9abc)
   const descriptionStr = JSON.stringify(description)
-  const cveMatch = descriptionStr.match(/CVE-\d{4}-\d{4,}/i)
+  const ghsaMatch = descriptionStr.match(
+    /GHSA-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}/i
+  )
 
-  if (cveMatch) {
-    const cveId = cveMatch[0].toUpperCase()
-    core.debug(`Extracted CVE ID ${cveId} from issue ${issue.key}`)
-    return cveId
+  if (ghsaMatch) {
+    const ghsaId = ghsaMatch[0].toUpperCase()
+    core.debug(`Extracted GHSA ID ${ghsaId} from issue ${issue.key}`)
+    return ghsaId
   }
 
   return null
