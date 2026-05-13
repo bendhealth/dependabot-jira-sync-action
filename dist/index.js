@@ -59177,20 +59177,19 @@ async function run() {
             );
             issuesCreated++;
 
-            if (!config.behavior.dryRun) {
-              coreExports.info(
-                `✅ Created Jira issue ${newIssue.key} for alert #${parsedAlert.id}`
-              );
+            coreExports.info(
+              `✅ Created Jira issue ${newIssue.key} for alert #${parsedAlert.id}`
+            );
 
-              // Add the new issue to our in-memory maps so subsequent alerts can find it
-              issueMap.set(parsedAlert.url, newIssue);
-              if (parsedAlert.cveId) {
-                if (!cveMap.has(parsedAlert.cveId)) {
-                  cveMap.set(parsedAlert.cveId, newIssue);
-                  coreExports.debug(
-                    `Added ${newIssue.key} to CVE map for ${parsedAlert.cveId}`
-                  );
-                }
+            // Add the new issue to our in-memory maps so subsequent alerts can find it
+            // This happens for both dry runs and real runs to ensure CVE grouping works correctly
+            issueMap.set(parsedAlert.url, newIssue);
+            if (parsedAlert.cveId) {
+              if (!cveMap.has(parsedAlert.cveId)) {
+                cveMap.set(parsedAlert.cveId, newIssue);
+                coreExports.debug(
+                  `Added ${newIssue.key} to CVE map for ${parsedAlert.cveId}`
+                );
               }
             }
           }
