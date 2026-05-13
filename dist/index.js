@@ -58754,7 +58754,7 @@ async function appendAlertUrlToIssue(
     coreExports.info(
       `[DRY RUN] Would append alert URL to issue ${issueKey}: ${alertUrl}`
     );
-    return { updated: false, dryRun: true }
+    return { updated: true, dryRun: true }
   }
 
   try {
@@ -58854,7 +58854,7 @@ async function reopenJiraIssue(
     coreExports.info(
       `[DRY RUN] Would reopen issue ${issueKey} using transition "${reopenTransition}"`
     );
-    return { reopened: false, dryRun: true }
+    return { reopened: true, dryRun: true }
   }
 
   try {
@@ -59177,9 +59177,11 @@ async function run() {
             );
             issuesCreated++;
 
-            coreExports.info(
-              `✅ Created Jira issue ${newIssue.key} for alert #${parsedAlert.id}`
-            );
+	    if (!config.behavior.dryRun) {
+              coreExports.info(
+		`✅ Created Jira issue ${newIssue.key} for alert #${parsedAlert.id}`
+              );
+	    }
 
             // Add the new issue to our in-memory maps so subsequent alerts can find it
             // This happens for both dry runs and real runs to ensure CVE grouping works correctly

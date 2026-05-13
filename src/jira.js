@@ -942,7 +942,7 @@ export async function appendAlertUrlToIssue(
     core.info(
       `[DRY RUN] Would append alert URL to issue ${issueKey}: ${alertUrl}`
     )
-    return { updated: false, dryRun: true }
+    return { updated: true, dryRun: true }
   }
 
   try {
@@ -1042,7 +1042,7 @@ export async function reopenJiraIssue(
     core.info(
       `[DRY RUN] Would reopen issue ${issueKey} using transition "${reopenTransition}"`
     )
-    return { reopened: false, dryRun: true }
+    return { reopened: true, dryRun: true }
   }
 
   try {
