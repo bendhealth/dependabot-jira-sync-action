@@ -132,8 +132,8 @@ outputs:
     description: 'Number of new Jira issues created'
   issues-updated:
     description: 'Number of existing Jira issues updated'
-  alerts-grouped-by-cve:
-    description: 'Number of alerts grouped into existing CVE issues'
+  alerts-grouped-by-ghsa:
+    description: 'Number of alerts grouped into issues with the same GHSA ID'
   issues-reopened:
     description: 'Number of closed issues reopened due to new alerts'
   issues-closed:

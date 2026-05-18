@@ -596,7 +596,7 @@ describe('Dependabot Jira Sync', () => {
 
     expect(mockCore.setOutput).toHaveBeenCalledWith('issues-created', '1')
     expect(mockCore.setOutput).toHaveBeenCalledWith(
-      'alerts-grouped-by-cve',
+      'alerts-grouped-by-ghsa',
       '1'
     )
   })
@@ -679,7 +679,7 @@ describe('Dependabot Jira Sync', () => {
 
     expect(mockCore.setOutput).toHaveBeenCalledWith('issues-created', '0')
     expect(mockCore.setOutput).toHaveBeenCalledWith(
-      'alerts-grouped-by-cve',
+      'alerts-grouped-by-ghsa',
       '1'
     )
   })

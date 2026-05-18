@@ -182,7 +182,7 @@ export async function run() {
     let issuesCreated = 0
     let issuesUpdated = 0
     let issuesReopened = 0
-    let alertsGroupedByCve = 0
+    let alertsGroupedByGhsa = 0
     let processingErrors = 0
     const processedAlerts = []
 
@@ -240,7 +240,7 @@ export async function run() {
             )
 
             if (appendResult.updated) {
-              alertsGroupedByCve++
+              alertsGroupedByGhsa++
             }
 
             // Check if the issue is closed and needs to be reopened
@@ -484,14 +484,14 @@ export async function run() {
 
     // Generate summary
     const summary = config.behavior.dryRun
-      ? `DRY RUN: Would create ${issuesCreated} issues, update ${issuesUpdated} issues, group ${alertsGroupedByCve} alerts by GHSA, reopen ${issuesReopened} issues, and close ${issuesClosed} issues`
-      : `Created ${issuesCreated} new issues, updated ${issuesUpdated} existing issues, grouped ${alertsGroupedByCve} alerts by GHSA, reopened ${issuesReopened} closed issues, and closed ${issuesClosed} resolved issues`
+      ? `DRY RUN: Would create ${issuesCreated} issues, update ${issuesUpdated} issues, group ${alertsGroupedByGhsa} alerts by GHSA, reopen ${issuesReopened} issues, and close ${issuesClosed} issues`
+      : `Created ${issuesCreated} new issues, updated ${issuesUpdated} existing issues, grouped ${alertsGroupedByGhsa} alerts by GHSA, reopened ${issuesReopened} closed issues, and closed ${issuesClosed} resolved issues`
 
     core.info(`\n📊 Summary:`)
     core.info(`- Alerts processed: ${processedAlerts.length}`)
     core.info(`- Issues created: ${issuesCreated}`)
     core.info(`- Issues updated: ${issuesUpdated}`)
-    core.info(`- Alerts grouped by GHSA: ${alertsGroupedByCve}`)
+    core.info(`- Alerts grouped by GHSA: ${alertsGroupedByGhsa}`)
     core.info(`- Issues reopened: ${issuesReopened}`)
     core.info(`- Issues closed: ${issuesClosed}`)
 
@@ -502,7 +502,7 @@ export async function run() {
     // Set outputs
     core.setOutput('issues-created', issuesCreated.toString())
     core.setOutput('issues-updated', issuesUpdated.toString())
-    core.setOutput('alerts-grouped-by-cve', alertsGroupedByCve.toString())
+    core.setOutput('alerts-grouped-by-ghsa', alertsGroupedByGhsa.toString())
     core.setOutput('issues-reopened', issuesReopened.toString())
     core.setOutput('issues-closed', issuesClosed.toString())
     core.setOutput('alerts-processed', processedAlerts.length.toString())
