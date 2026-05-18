@@ -484,14 +484,14 @@ export async function run() {
 
     // Generate summary
     const summary = config.behavior.dryRun
-      ? `DRY RUN: Would create ${issuesCreated} issues, update ${issuesUpdated} issues, group ${alertsGroupedByCve} alerts by CVE, reopen ${issuesReopened} issues, and close ${issuesClosed} issues`
-      : `Created ${issuesCreated} new issues, updated ${issuesUpdated} existing issues, grouped ${alertsGroupedByCve} alerts by CVE, reopened ${issuesReopened} closed issues, and closed ${issuesClosed} resolved issues`
+      ? `DRY RUN: Would create ${issuesCreated} issues, update ${issuesUpdated} issues, group ${alertsGroupedByCve} alerts by GHSA, reopen ${issuesReopened} issues, and close ${issuesClosed} issues`
+      : `Created ${issuesCreated} new issues, updated ${issuesUpdated} existing issues, grouped ${alertsGroupedByCve} alerts by GHSA, reopened ${issuesReopened} closed issues, and closed ${issuesClosed} resolved issues`
 
     core.info(`\n📊 Summary:`)
     core.info(`- Alerts processed: ${processedAlerts.length}`)
     core.info(`- Issues created: ${issuesCreated}`)
     core.info(`- Issues updated: ${issuesUpdated}`)
-    core.info(`- Alerts grouped by CVE: ${alertsGroupedByCve}`)
+    core.info(`- Alerts grouped by GHSA: ${alertsGroupedByCve}`)
     core.info(`- Issues reopened: ${issuesReopened}`)
     core.info(`- Issues closed: ${issuesClosed}`)
 

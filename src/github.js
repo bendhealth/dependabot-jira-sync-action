@@ -224,15 +224,7 @@ export async function getAlertStatus(owner, repo, alertId) {
     const alert = response.data
 
     // Map GitHub states to our simplified states
-    if (alert.state === 'open') {
-      return 'open'
-    } else if (alert.state === 'dismissed') {
-      return 'dismissed'
-    } else if (alert.state === 'fixed') {
-      return 'fixed'
-    } else {
-      return alert.state // Return whatever GitHub says
-    }
+    return alert.state // Return whatever GitHub says
   } catch (error) {
     if (error.status === 404) {
       core.info(`Alert #${alertId} not found (may have been deleted)`)
