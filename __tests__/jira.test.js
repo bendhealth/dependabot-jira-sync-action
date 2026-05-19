@@ -15,6 +15,7 @@ const mockCore = {
 const mockAxiosInstance = {
   get: jest.fn(),
   post: jest.fn(),
+  put: jest.fn(),
   request: jest.fn(),
   interceptors: {
     request: {
@@ -45,7 +46,10 @@ const {
   extractAlertUrlFromIssue,
   extractAllAlertUrlsFromIssue,
   extractAlertIdFromUrl,
-  closeJiraIssue
+  extractGhsaIdFromIssue,
+  closeJiraIssue,
+  appendAlertUrlToIssue,
+  reopenJiraIssue
 } = await import('../src/jira.js')
 
 describe('Jira API Functions', () => {
@@ -1360,7 +1364,6 @@ describe('Jira API Functions', () => {
   })
 })
 
-
 // Security-focused tests (Item 23)
 describe('Security Tests', () => {
   describe('JQL Injection Prevention', () => {
@@ -1399,7 +1402,9 @@ describe('Security Tests', () => {
         '/search/jql',
         expect.objectContaining({
           params: expect.objectContaining({
-            jql: expect.stringContaining(`labels = "dependabot\\' OR \\'1\\'=\\'1"`)
+            jql: expect.stringContaining(
+              `labels = "dependabot\\' OR \\'1\\'=\\'1"`
+            )
           })
         })
       )
@@ -1561,8 +1566,14 @@ describe('Security Tests', () => {
       expect(descriptionJson).toContain('content')
       // But package and ecosystem still have them because they're passed through separately
       // Let's verify the sanitization is working for text nodes but not blocking JSON structure
-      const packageText = JSON.stringify(issueData.fields.description).match(/"test-package([^"]*)"/)?.[1] || ''
-      const ecosystemText = JSON.stringify(issueData.fields.description).match(/"npm([^"]*)"/)?.[1] || ''
+      const packageText =
+        JSON.stringify(issueData.fields.description).match(
+          /"test-package([^"]*)"/
+        )?.[1] || ''
+      const ecosystemText =
+        JSON.stringify(issueData.fields.description).match(
+          /"npm([^"]*)"/
+        )?.[1] || ''
       // Package and ecosystem sanitization removes script tags from values
       expect(packageText).not.toMatch(/<script.*?>.*?<\/script>/i)
       expect(ecosystemText).not.toMatch(/<script.*?>.*?<\/script>/i)
@@ -1660,3 +1671,808 @@ describe('Security Tests', () => {
     })
   })
 })
+
+
+
+  describe('Retry Logic and Error Handling', () => {
+    let client
+
+    beforeEach(() => {
+      client = createJiraClient('https://test.atlassian.net', 'user', 'token')
+    })
+
+    test('retries on HTTP 429 rate limit', async () => {
+      const errorHandler =
+        mockAxiosInstance.interceptors.response.use.mock.calls[0][1]
+
+      mockAxiosInstance.request.mockResolvedValue({ data: { success: true } })
+
+      const error429 = {
+        config: { metadata: { retryCount: 0 } },
+        response: {
+          status: 429,
+          statusText: 'Too Many Requests',
+          headers: {},
+          data: {}
+        }
+      }
+
+      // Mock setTimeout to avoid actual delays
+      jest.useFakeTimers()
+
+      const retryPromise = errorHandler(error429)
+
+      // Fast-forward time
+      await jest.advanceTimersByTimeAsync(1000) // 1 second for first retry
+
+      await expect(retryPromise).resolves.toBeDefined()
+      expect(mockCore.warning).toHaveBeenCalledWith(
+        expect.stringContaining('Jira API returned 429')
+      )
+      expect(mockAxiosInstance.request).toHaveBeenCalled()
+
+      jest.useRealTimers()
+    })
+
+    test('retries on HTTP 503 service unavailable', async () => {
+      const errorHandler =
+        mockAxiosInstance.interceptors.response.use.mock.calls[0][1]
+
+      mockAxiosInstance.request.mockResolvedValue({ data: { success: true } })
+
+      const error503 = {
+        config: { metadata: { retryCount: 0 } },
+        response: {
+          status: 503,
+          statusText: 'Service Unavailable',
+          headers: {},
+          data: {}
+        }
+      }
+
+      jest.useFakeTimers()
+      const retryPromise = errorHandler(error503)
+      await jest.advanceTimersByTimeAsync(1000)
+
+      await expect(retryPromise).resolves.toBeDefined()
+      expect(mockCore.warning).toHaveBeenCalledWith(
+        expect.stringContaining('503')
+      )
+
+      jest.useRealTimers()
+    })
+
+    test('uses exponential backoff (1s, 2s, 4s)', async () => {
+      const errorHandler =
+        mockAxiosInstance.interceptors.response.use.mock.calls[0][1]
+
+      jest.useFakeTimers()
+
+      // First retry
+      const error1 = {
+        config: { metadata: { retryCount: 0 } },
+        response: { status: 429, headers: {}, data: {} }
+      }
+      errorHandler(error1)
+      expect(mockCore.warning).toHaveBeenCalledWith(
+        expect.stringContaining('1000ms')
+      )
+
+      // Second retry
+      const error2 = {
+        config: { metadata: { retryCount: 1 } },
+        response: { status: 429, headers: {}, data: {} }
+      }
+      errorHandler(error2)
+      expect(mockCore.warning).toHaveBeenCalledWith(
+        expect.stringContaining('2000ms')
+      )
+
+      // Third retry
+      const error3 = {
+        config: { metadata: { retryCount: 2 } },
+        response: { status: 429, headers: {}, data: {} }
+      }
+      errorHandler(error3)
+      expect(mockCore.warning).toHaveBeenCalledWith(
+        expect.stringContaining('4000ms')
+      )
+
+      jest.useRealTimers()
+    })
+
+    test('respects Retry-After header', async () => {
+      const errorHandler =
+        mockAxiosInstance.interceptors.response.use.mock.calls[0][1]
+
+      const errorWithRetryAfter = {
+        config: { metadata: { retryCount: 0 } },
+        response: {
+          status: 429,
+          headers: { 'retry-after': '10' }, // 10 seconds
+          data: {}
+        }
+      }
+
+      jest.useFakeTimers()
+      errorHandler(errorWithRetryAfter)
+
+      expect(mockCore.warning).toHaveBeenCalledWith(
+        expect.stringContaining('10000ms') // 10 seconds in milliseconds
+      )
+
+      jest.useRealTimers()
+    })
+
+    test('stops retrying after max retries (3)', async () => {
+      const errorHandler =
+        mockAxiosInstance.interceptors.response.use.mock.calls[0][1]
+
+      const error = {
+        config: { metadata: { retryCount: 3 } }, // Already at max
+        response: {
+          status: 429,
+          statusText: 'Too Many Requests',
+          headers: {},
+          data: {}
+        }
+      }
+
+      await expect(errorHandler(error)).rejects.toThrow('Jira API Error')
+      expect(mockAxiosInstance.request).not.toHaveBeenCalled()
+    })
+
+    test('does not retry on non-retryable errors (400, 401, 404)', async () => {
+      const errorHandler =
+        mockAxiosInstance.interceptors.response.use.mock.calls[0][1]
+
+      for (const status of [400, 401, 404]) {
+        jest.clearAllMocks()
+
+        const error = {
+          config: { metadata: { retryCount: 0 } },
+          response: {
+            status,
+            statusText: 'Error',
+            data: {}
+          }
+        }
+
+        await expect(errorHandler(error)).rejects.toThrow('Jira API Error')
+        expect(mockAxiosInstance.request).not.toHaveBeenCalled()
+        expect(mockCore.warning).not.toHaveBeenCalled()
+      }
+    })
+
+    test('retries on 502 and 504 gateway errors', async () => {
+      const errorHandler =
+        mockAxiosInstance.interceptors.response.use.mock.calls[0][1]
+
+      jest.useFakeTimers()
+
+      for (const status of [502, 504]) {
+        jest.clearAllMocks()
+
+        const error = {
+          config: { metadata: { retryCount: 0 } },
+          response: {
+            status,
+            statusText: 'Gateway Error',
+            headers: {},
+            data: {}
+          }
+        }
+
+        const promise = errorHandler(error)
+        jest.advanceTimersByTime(1000)
+        await promise
+
+        expect(mockCore.warning).toHaveBeenCalledWith(
+          expect.stringContaining(`${status}`)
+        )
+      }
+
+      jest.useRealTimers()
+    })
+  })
+
+
+  describe('Advanced Sanitization Tests', () => {
+    test('escapes all JQL special characters', async () => {
+      const jiraClient = {
+        get: jest.fn().mockResolvedValue({
+          data: {
+            issues: [],
+            total: 0
+          }
+        })
+      }
+
+      // Test escaping of single quotes, double quotes, backslashes, and newlines
+      const dangerousLabel = `test'label"with\\backslash\nand\nnewlines`
+      await findDependabotIssues(jiraClient, 'TEST', dangerousLabel, true)
+
+      const jqlUsed = jiraClient.get.mock.calls[0][1].params.jql
+      // Should have escaped quotes and backslashes
+      expect(jqlUsed).toContain("\\'")
+      expect(jqlUsed).toContain('\\"')
+      expect(jqlUsed).toContain('\\\\')
+      // Newlines should be replaced with spaces
+      expect(jqlUsed).not.toContain('\n')
+    })
+
+    test('sanitizes iframe and embed tags', async () => {
+      const jiraClient = {
+        post: jest.fn().mockResolvedValue({
+          data: { key: 'TEST-1' }
+        })
+      }
+
+      const maliciousAlert = {
+        id: '123',
+        title: '<iframe src="evil.com"></iframe>Test',
+        description: '<embed src="malware.swf"></embed>Description <object data="bad.pdf"></object>',
+        package: 'test-package',
+        ecosystem: 'npm',
+        severity: 'high',
+        url: 'https://github.com/owner/repo/security/dependabot/123',
+        createdAt: '2023-01-15T10:00:00Z'
+      }
+
+      await createJiraIssue(
+        jiraClient,
+        {
+          projectKey: 'TEST',
+          issueType: 'Task',
+          dueDays: { critical: 1, high: 7, medium: 30, low: 90 }
+        },
+        maliciousAlert,
+        false
+      )
+
+      const issueData = jiraClient.post.mock.calls[0][1]
+      const summary = issueData.fields.summary
+      const descriptionJson = JSON.stringify(issueData.fields.description)
+
+      expect(summary).not.toContain('<iframe')
+      expect(summary).not.toContain('</iframe>')
+      expect(descriptionJson).not.toContain('<embed')
+      expect(descriptionJson).not.toContain('<object')
+    })
+
+    test('removes event handlers from text', async () => {
+      const jiraClient = {
+        post: jest.fn().mockResolvedValue({
+          data: { key: 'TEST-1' }
+        })
+      }
+
+      const maliciousAlert = {
+        id: '123',
+        title: '<div onclick="alert()">Test</div>',
+        description: 'Text with onerror="bad()" and onload="evil()"',
+        package: 'test-package',
+        ecosystem: 'npm',
+        severity: 'high',
+        url: 'https://github.com/owner/repo/security/dependabot/123',
+        createdAt: '2023-01-15T10:00:00Z'
+      }
+
+      await createJiraIssue(
+        jiraClient,
+        {
+          projectKey: 'TEST',
+          issueType: 'Task',
+          dueDays: { critical: 1, high: 7, medium: 30, low: 90 }
+        },
+        maliciousAlert,
+        false
+      )
+
+      const issueData = jiraClient.post.mock.calls[0][1]
+      const descriptionJson = JSON.stringify(issueData.fields.description)
+
+      expect(descriptionJson).not.toMatch(/on\w+\s*=/i)
+    })
+
+    test('validates and rejects HTTP (non-HTTPS) URLs', async () => {
+      const jiraClient = { post: jest.fn() }
+      const httpAlert = {
+        id: '123',
+        title: 'Test',
+        package: 'test-package',
+        ecosystem: 'npm',
+        severity: 'high',
+        url: 'http://github.com/owner/repo/security/dependabot/123', // HTTP not HTTPS
+        createdAt: '2023-01-15T10:00:00Z'
+      }
+
+      await expect(
+        createJiraIssue(
+          jiraClient,
+          {
+            projectKey: 'TEST',
+            issueType: 'Task',
+            dueDays: { critical: 1, high: 7, medium: 30, low: 90 }
+          },
+          httpAlert,
+          false
+        )
+      ).rejects.toThrow('URL must use HTTPS protocol')
+    })
+
+    test('validates and rejects non-GitHub domains', async () => {
+      const jiraClient = { post: jest.fn() }
+      const badDomainAlert = {
+        id: '123',
+        title: 'Test',
+        package: 'test-package',
+        ecosystem: 'npm',
+        severity: 'high',
+        url: 'https://evil.com/fake/alert', // Not GitHub
+        createdAt: '2023-01-15T10:00:00Z'
+      }
+
+      await expect(
+        createJiraIssue(
+          jiraClient,
+          {
+            projectKey: 'TEST',
+            issueType: 'Task',
+            dueDays: { critical: 1, high: 7, medium: 30, low: 90 }
+          },
+          badDomainAlert,
+          false
+        )
+      ).rejects.toThrow('URL must be from github.com domain')
+    })
+  })
+
+  describe('GHSA Extraction Tests', () => {
+    test('extracts GHSA ID in lowercase', () => {
+      const issue = {
+        key: 'TEST-1',
+        fields: {
+          description: {
+            type: 'doc',
+            content: [
+              {
+                type: 'paragraph',
+                content: [{ type: 'text', text: 'GHSA ID: ghsa-1234-5678-9abc' }]
+              }
+            ]
+          }
+        }
+      }
+
+      const result = extractGhsaIdFromIssue(issue)
+      expect(result).toBe('GHSA-1234-5678-9ABC') // Should be uppercase
+    })
+
+    test('extracts GHSA ID in mixed case', () => {
+      const issue = {
+        fields: {
+          description: {
+            type: 'doc',
+            content: [
+              {
+                type: 'paragraph',
+                content: [{ type: 'text', text: 'Found GhSa-AbCd-1234-XyZw' }]
+              }
+            ]
+          }
+        }
+      }
+
+      const result = extractGhsaIdFromIssue(issue)
+      expect(result).toBe('GHSA-ABCD-1234-XYZW')
+    })
+
+    test('returns null when GHSA ID missing', () => {
+      const issue = {
+        fields: {
+          description: {
+            type: 'doc',
+            content: [
+              {
+                type: 'paragraph',
+                content: [{ type: 'text', text: 'No GHSA here' }]
+              }
+            ]
+          }
+        }
+      }
+
+      const result = extractGhsaIdFromIssue(issue)
+      expect(result).toBeNull()
+    })
+
+    test('extracts first GHSA ID when multiple present', () => {
+      const issue = {
+        fields: {
+          description: {
+            type: 'doc',
+            content: [
+              {
+                type: 'paragraph',
+                content: [
+                  {
+                    type: 'text',
+                    text: 'GHSA-1111-2222-3333 and GHSA-4444-5555-6666'
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      }
+
+      const result = extractGhsaIdFromIssue(issue)
+      expect(result).toBe('GHSA-1111-2222-3333') // First one
+    })
+
+    test('handles malformed GHSA IDs gracefully', () => {
+      const issue = {
+        fields: {
+          description: {
+            type: 'doc',
+            content: [
+              {
+                type: 'paragraph',
+                content: [
+                  {
+                    type: 'text',
+                    text: 'GHSA-123 GHSA-12345-6789 GHSA-toolong-value-here'
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      }
+
+      const result = extractGhsaIdFromIssue(issue)
+      expect(result).toBeNull() // None match the proper format
+    })
+
+
+  describe('appendAlertUrlToIssue', () => {
+    test('appends new alert URL to existing issue', async () => {
+      mockAxiosInstance.get.mockResolvedValue({
+        data: {
+          fields: {
+            description: {
+              type: 'doc',
+              version: 1,
+              content: [
+                {
+                  type: 'paragraph',
+                  content: [
+                    { type: 'text', text: 'Existing content' }
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      })
+
+      mockAxiosInstance.put.mockResolvedValue({
+        data: {}
+      })
+
+      const result = await appendAlertUrlToIssue(
+        mockAxiosInstance,
+        'TEST-123',
+        'https://github.com/owner/repo/security/dependabot/456',
+        false
+      )
+
+      expect(result.updated).toBe(true)
+      expect(mockAxiosInstance.put).toHaveBeenCalledWith(
+        '/issue/TEST-123',
+        expect.objectContaining({
+          fields: expect.objectContaining({
+            description: expect.objectContaining({
+              content: expect.arrayContaining([
+                expect.objectContaining({
+                  type: 'paragraph',
+                  content: expect.arrayContaining([
+                    expect.objectContaining({
+                      text: 'https://github.com/owner/repo/security/dependabot/456'
+                    })
+                  ])
+                })
+              ])
+            })
+          })
+        })
+      )
+    })
+
+    test('skips when URL already exists', async () => {
+      const existingUrl = 'https://github.com/owner/repo/security/dependabot/456'
+
+      mockAxiosInstance.get.mockResolvedValue({
+        data: {
+          fields: {
+            description: {
+              type: 'doc',
+              content: [
+                {
+                  type: 'paragraph',
+                  content: [
+                    { type: 'text', text: existingUrl }
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      })
+
+      const result = await appendAlertUrlToIssue(
+        mockAxiosInstance,
+        'TEST-123',
+        existingUrl,
+        false
+      )
+
+      expect(result.updated).toBe(false)
+      expect(result.alreadyExists).toBe(true)
+      expect(mockAxiosInstance.put).not.toHaveBeenCalled()
+    })
+
+    test('handles dry run mode', async () => {
+      const result = await appendAlertUrlToIssue(
+        mockAxiosInstance,
+        'TEST-123',
+        'https://github.com/owner/repo/security/dependabot/456',
+        true // dry run
+      )
+
+      expect(result.updated).toBe(true)
+      expect(result.dryRun).toBe(true)
+      expect(mockAxiosInstance.get).not.toHaveBeenCalled()
+      expect(mockCore.info).toHaveBeenCalledWith(
+        expect.stringContaining('[DRY RUN]')
+      )
+    })
+
+    test('handles empty description', async () => {
+      mockAxiosInstance.get.mockResolvedValue({
+        data: {
+          fields: {
+            description: null
+          }
+        }
+      })
+
+      mockAxiosInstance.put.mockResolvedValue({
+        data: {}
+      })
+
+      const result = await appendAlertUrlToIssue(
+        mockAxiosInstance,
+        'TEST-123',
+        'https://github.com/owner/repo/security/dependabot/456',
+        false
+      )
+
+      expect(result.updated).toBe(true)
+      expect(mockAxiosInstance.put).toHaveBeenCalled()
+    })
+
+    test('handles error when issue not found', async () => {
+      mockAxiosInstance.get.mockRejectedValue(new Error('Issue not found'))
+
+      await expect(
+        appendAlertUrlToIssue(
+          mockAxiosInstance,
+          'TEST-999',
+          'https://github.com/owner/repo/security/dependabot/456',
+          false
+        )
+      ).rejects.toThrow()
+    })
+  })
+
+  describe('reopenJiraIssue', () => {
+    test('reopens issue with valid transition', async () => {
+      // Mock getting transitions
+      mockAxiosInstance.get.mockResolvedValue({
+        data: {
+          transitions: [
+            { id: '1', name: 'Reopen', to: { name: 'Open' } },
+            { id: '2', name: 'Close', to: { name: 'Closed' } }
+          ]
+        }
+      })
+
+      mockAxiosInstance.post.mockResolvedValue({
+        data: {}
+      })
+
+      const result = await reopenJiraIssue(
+        mockAxiosInstance,
+        'TEST-123',
+        'Reopen',
+        'Reopening due to new alert',
+        false
+      )
+
+      expect(result.reopened).toBe(true)
+      expect(mockAxiosInstance.post).toHaveBeenCalledWith(
+        '/issue/TEST-123/transitions',
+        expect.objectContaining({
+          transition: { id: '1' }
+        })
+      )
+    })
+
+    test('handles dry run mode', async () => {
+      const result = await reopenJiraIssue(
+        mockAxiosInstance,
+        'TEST-123',
+        'Reopen',
+        'Reopening',
+        true // dry run
+      )
+
+      expect(result.reopened).toBe(true)
+      expect(result.dryRun).toBe(true)
+      expect(mockAxiosInstance.get).not.toHaveBeenCalled()
+      expect(mockCore.info).toHaveBeenCalledWith(
+        expect.stringContaining('[DRY RUN]')
+      )
+    })
+
+    test('returns false when transition not available', async () => {
+      mockAxiosInstance.get.mockResolvedValue({
+        data: {
+          transitions: [
+            { id: '2', name: 'Close', to: { name: 'Closed' } }
+          ]
+        }
+      })
+
+      const result = await reopenJiraIssue(
+        mockAxiosInstance,
+        'TEST-123',
+        'Reopen',
+        'Comment',
+        false
+      )
+
+      expect(result.reopened).toBe(false)
+      expect(result.transitionNotAvailable).toBe(true)
+    })
+
+    test('handles case-insensitive transition names', async () => {
+      mockAxiosInstance.get.mockResolvedValue({
+        data: {
+          transitions: [
+            { id: '1', name: 'REOPEN', to: { name: 'Open' } }
+          ]
+        }
+      })
+
+      mockAxiosInstance.post.mockResolvedValue({ data: {} })
+
+      const result = await reopenJiraIssue(
+        mockAxiosInstance,
+        'TEST-123',
+        'reopen', // lowercase
+        null, // no comment
+        false
+      )
+
+      expect(result.reopened).toBe(true)
+    })
+
+    test('adds comment when provided', async () => {
+      mockAxiosInstance.get.mockResolvedValue({
+        data: {
+          transitions: [{ id: '1', name: 'Reopen' }]
+        }
+      })
+
+      mockAxiosInstance.post.mockResolvedValue({ data: {} })
+
+      await reopenJiraIssue(
+        mockAxiosInstance,
+        'TEST-123',
+        'Reopen',
+        'Test comment',
+        false
+      )
+
+      // Should have called post twice: once for transition, once for comment
+      expect(mockAxiosInstance.post).toHaveBeenCalledTimes(2)
+      expect(mockAxiosInstance.post).toHaveBeenCalledWith(
+        '/issue/TEST-123/comment',
+        expect.objectContaining({
+          body: expect.objectContaining({
+            content: expect.arrayContaining([
+              expect.objectContaining({
+                content: expect.arrayContaining([
+                  expect.objectContaining({
+                    text: 'Test comment'
+                  })
+                ])
+              })
+            ])
+          })
+        })
+      )
+    })
+  })
+
+  describe('Pagination Edge Cases', () => {
+    // Move GitHub pagination test to github.test.js where mockPaginateIterator is available
+
+    test('handles Jira pagination with 0 results', async () => {
+      mockAxiosInstance.get.mockResolvedValue({
+        data: {
+          issues: [],
+          total: 0,
+          startAt: 0,
+          maxResults: 100
+        }
+      })
+
+      const result = await findDependabotIssues(
+        mockAxiosInstance,
+        'TEST',
+        'dependabot',
+        true
+      )
+
+      expect(result).toHaveLength(0)
+      expect(mockAxiosInstance.get).toHaveBeenCalledTimes(1)
+    })
+
+    test('handles Jira pagination with partial last page', async () => {
+      // First page: 100 results
+      // Second page: 100 results
+      // Third page: 50 results (partial)
+      mockAxiosInstance.get
+        .mockResolvedValueOnce({
+          data: {
+            issues: Array(100).fill({ key: 'TEST-1' }),
+            total: 250,
+            startAt: 0,
+            maxResults: 100
+          }
+        })
+        .mockResolvedValueOnce({
+          data: {
+            issues: Array(100).fill({ key: 'TEST-2' }),
+            total: 250,
+            startAt: 100,
+            maxResults: 100
+          }
+        })
+        .mockResolvedValueOnce({
+          data: {
+            issues: Array(50).fill({ key: 'TEST-3' }),
+            total: 250,
+            startAt: 200,
+            maxResults: 100
+          }
+        })
+
+      const result = await findDependabotIssues(
+        mockAxiosInstance,
+        'TEST',
+        'dependabot',
+        false
+      )
+
+      expect(result).toHaveLength(250)
+      expect(mockAxiosInstance.get).toHaveBeenCalledTimes(3)
+    })
+  })
+
+  })
+

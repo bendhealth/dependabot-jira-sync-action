@@ -40,8 +40,141 @@ jest.unstable_mockModule('jsonwebtoken', () => ({
 }))
 
 // Import the functions we want to test
-const { getRepoInfo, getDependabotAlerts, parseAlert, getAlertStatus } =
-  await import('../src/github.js')
+const {
+  getRepoInfo,
+  getDependabotAlerts,
+  parseAlert,
+  getAlertStatus,
+  getGitHubToken
+} = await import('../src/github.js')
+
+
+  describe('getGitHubToken', () => {
+    it('should use GitHub App authentication when all credentials provided', async () => {
+      mockCore.getInput.mockImplementation((name) => {
+        const inputs = {
+          'github-app-id': '12345',
+          'github-app-private-key': 'LS0tLS1CRUdJTiBSU0EgUFJJVkFURSBLRVktLS0tLQ==', // Base64 encoded
+          'github-app-installation-id': '67890',
+          'github-token': ''
+        }
+        return inputs[name] || ''
+      })
+
+      // Mock the apps API
+      mockOctokit.rest.apps = {
+        createInstallationAccessToken: jest
+          .fn()
+          .mockResolvedValue({ data: { token: 'ghs_installation_token' } })
+      }
+
+      const token = await getGitHubToken()
+
+      expect(token).toBe('ghs_installation_token')
+      expect(mockCore.info).toHaveBeenCalledWith(
+        '🔑 Using GitHub App authentication'
+      )
+      expect(mockOctokit.rest.apps.createInstallationAccessToken).toHaveBeenCalledWith(
+        {
+          installation_id: 67890
+        }
+      )
+    })
+
+    it('should handle PEM format private keys', async () => {
+      const pemKey = `-----BEGIN RSA PRIVATE KEY-----
+MIIEpAIBAAKCAQEA...
+-----END RSA PRIVATE KEY-----`
+
+      mockCore.getInput.mockImplementation((name) => {
+        const inputs = {
+          'github-app-id': '12345',
+          'github-app-private-key': pemKey,
+          'github-app-installation-id': '67890',
+          'github-token': ''
+        }
+        return inputs[name] || ''
+      })
+
+      mockOctokit.rest.apps = {
+        createInstallationAccessToken: jest
+          .fn()
+          .mockResolvedValue({ data: { token: 'ghs_installation_token' } })
+      }
+
+      const token = await getGitHubToken()
+
+      expect(token).toBe('ghs_installation_token')
+    })
+
+    it('should fall back to PAT when GitHub App credentials incomplete', async () => {
+      mockCore.getInput.mockImplementation((name) => {
+        const inputs = {
+          'github-app-id': '12345',
+          'github-app-private-key': '', // Missing private key
+          'github-app-installation-id': '67890',
+          'github-token': 'ghp_personal_access_token'
+        }
+        return inputs[name] || ''
+      })
+
+      const token = await getGitHubToken()
+
+      expect(token).toBe('ghp_personal_access_token')
+      expect(mockCore.info).toHaveBeenCalledWith(
+        '🔑 Using GitHub token authentication'
+      )
+    })
+
+    it('should use PAT when only token provided', async () => {
+      mockCore.getInput.mockImplementation((name) => {
+        const inputs = {
+          'github-app-id': '',
+          'github-app-private-key': '',
+          'github-app-installation-id': '',
+          'github-token': 'ghp_token_12345'
+        }
+        return inputs[name] || ''
+      })
+
+      const token = await getGitHubToken()
+
+      expect(token).toBe('ghp_token_12345')
+      expect(mockCore.info).toHaveBeenCalledWith(
+        '🔑 Using GitHub token authentication'
+      )
+    })
+
+    it('should throw error when no authentication method provided', async () => {
+      mockCore.getInput.mockImplementation(() => '')
+
+      await expect(getGitHubToken()).rejects.toThrow(
+        /No authentication method provided/
+      )
+    })
+
+    it('should handle GitHub App installation token errors', async () => {
+      mockCore.getInput.mockImplementation((name) => {
+        const inputs = {
+          'github-app-id': '12345',
+          'github-app-private-key': 'LS0tLS1CRUdJTiBSU0EgUFJJVkFURSBLRVktLS0tLQ==',
+          'github-app-installation-id': '67890',
+          'github-token': ''
+        }
+        return inputs[name] || ''
+      })
+
+      mockOctokit.rest.apps = {
+        createInstallationAccessToken: jest
+          .fn()
+          .mockRejectedValue(new Error('Invalid installation'))
+      }
+
+      await expect(getGitHubToken()).rejects.toThrow(
+        /Failed to get installation token/
+      )
+    })
+  })
 
 describe('GitHub API Functions', () => {
   beforeEach(() => {
@@ -256,6 +389,41 @@ describe('GitHub API Functions', () => {
       expect(result).toHaveLength(150)
       expect(result[0].number).toBe(1)
       expect(result[149].number).toBe(150)
+    })
+
+    it('should handle exactly 100 alerts (boundary)', async () => {
+      const alerts = Array.from({ length: 100 }, (_, i) => ({
+        number: i + 1,
+        state: 'open',
+        security_advisory: {
+          ghsa_id: `GHSA-${String(i).padStart(4, '0')}-xxxx-yyyy`,
+          summary: 'Test vulnerability',
+          severity: 'high'
+        },
+        security_vulnerability: {
+          package: { name: 'test-package', ecosystem: 'npm' },
+          severity: 'high',
+          vulnerable_version_range: '< 1.0.0',
+          first_patched_version: { identifier: '1.0.0' }
+        },
+        dependency: {
+          package: { name: 'test-package', ecosystem: 'npm' }
+        },
+        created_at: '2023-01-01T00:00:00Z',
+        updated_at: '2023-01-02T00:00:00Z',
+        html_url: `https://github.com/test/repo/security/dependabot/${i + 1}`
+      }))
+
+      // Mock pagination iterator to return alerts
+      const mockIterator = (async function* () {
+        yield { data: alerts }
+      })()
+
+      mockPaginateIterator.mockReturnValue(mockIterator)
+
+      const result = await getDependabotAlerts('test', 'repo')
+
+      expect(result).toHaveLength(100)
     })
   })
 
