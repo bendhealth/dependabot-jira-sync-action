@@ -37839,15 +37839,7 @@ async function getAlertStatus(owner, repo, alertId) {
     const alert = response.data;
 
     // Map GitHub states to our simplified states
-    if (alert.state === 'open') {
-      return 'open'
-    } else if (alert.state === 'dismissed') {
-      return 'dismissed'
-    } else if (alert.state === 'fixed') {
-      return 'fixed'
-    } else {
-      return alert.state // Return whatever GitHub says
-    }
+    return alert.state // Return whatever GitHub says
   } catch (error) {
     if (error.status === 404) {
       coreExports.info(`Alert #${alertId} not found (may have been deleted)`);
@@ -58245,6 +58237,39 @@ async function updateJiraIssue(
   dryRun = false,
   customComment = null
 ) {
+  // First, fetch the existing issue to check if it needs updating
+  // Only skip the comparison check if a custom comment is provided (manual update)
+  if (!customComment) {
+    try {
+      const issueResponse = await jiraClient.get(`/issue/${issueKey}`, {
+        params: {
+          fields: 'updated,comment'
+        }
+      });
+
+      const issueUpdatedAt = new Date(issueResponse.data.fields.updated);
+      const alertUpdatedAt = new Date(alert.updatedAt);
+
+      // If the alert hasn't been updated since the Jira issue was last updated,
+      // skip adding a redundant comment
+      if (alertUpdatedAt <= issueUpdatedAt) {
+        coreExports.info(
+          `Alert #${alert.id} hasn't changed since last Jira update (${alertUpdatedAt.toISOString()} <= ${issueUpdatedAt.toISOString()}), skipping comment`
+        );
+        return { updated: false, skipped: true, reason: 'no_changes' }
+      }
+
+      coreExports.info(
+        `Alert #${alert.id} has been updated (${alertUpdatedAt.toISOString()} > ${issueUpdatedAt.toISOString()}), adding comment`
+      );
+    } catch (error) {
+      coreExports.warning(
+        `Could not fetch issue ${issueKey} for comparison, proceeding with update: ${error.message}`
+      );
+      // Continue with update if we can't fetch for comparison
+    }
+  }
+
   // If a custom comment is provided, use it (convert plain text to ADF if needed)
   // Otherwise, build the default alert-based comment
   const comment = customComment
@@ -59080,7 +59105,7 @@ async function run() {
     let issuesCreated = 0;
     let issuesUpdated = 0;
     let issuesReopened = 0;
-    let alertsGroupedByCve = 0;
+    let alertsGroupedByGhsa = 0;
     let processingErrors = 0;
     const processedAlerts = [];
 
@@ -59098,13 +59123,17 @@ async function run() {
         if (existingIssue) {
           if (config.behavior.updateExisting) {
             coreExports.info(`Found existing issue: ${existingIssue.key}`);
-            await updateJiraIssue(
+            const updateResult = await updateJiraIssue(
               jiraClient,
               existingIssue.key,
               parsedAlert,
               config.behavior.dryRun
             );
-            issuesUpdated++;
+
+            // Only increment counter if we actually updated (not skipped due to no changes)
+            if (updateResult.updated) {
+              issuesUpdated++;
+            }
           } else {
             coreExports.info(
               `Skipping existing issue: ${existingIssue.key} (update-existing is false)`
@@ -59138,7 +59167,7 @@ async function run() {
             );
 
             if (appendResult.updated) {
-              alertsGroupedByCve++;
+              alertsGroupedByGhsa++;
             }
 
             // Check if the issue is closed and needs to be reopened
@@ -59382,14 +59411,14 @@ async function run() {
 
     // Generate summary
     const summary = config.behavior.dryRun
-      ? `DRY RUN: Would create ${issuesCreated} issues, update ${issuesUpdated} issues, group ${alertsGroupedByCve} alerts by CVE, reopen ${issuesReopened} issues, and close ${issuesClosed} issues`
-      : `Created ${issuesCreated} new issues, updated ${issuesUpdated} existing issues, grouped ${alertsGroupedByCve} alerts by CVE, reopened ${issuesReopened} closed issues, and closed ${issuesClosed} resolved issues`;
+      ? `DRY RUN: Would create ${issuesCreated} issues, update ${issuesUpdated} issues, group ${alertsGroupedByGhsa} alerts by GHSA, reopen ${issuesReopened} issues, and close ${issuesClosed} issues`
+      : `Created ${issuesCreated} new issues, updated ${issuesUpdated} existing issues, grouped ${alertsGroupedByGhsa} alerts by GHSA, reopened ${issuesReopened} closed issues, and closed ${issuesClosed} resolved issues`;
 
     coreExports.info(`\n📊 Summary:`);
     coreExports.info(`- Alerts processed: ${processedAlerts.length}`);
     coreExports.info(`- Issues created: ${issuesCreated}`);
     coreExports.info(`- Issues updated: ${issuesUpdated}`);
-    coreExports.info(`- Alerts grouped by CVE: ${alertsGroupedByCve}`);
+    coreExports.info(`- Alerts grouped by GHSA: ${alertsGroupedByGhsa}`);
     coreExports.info(`- Issues reopened: ${issuesReopened}`);
     coreExports.info(`- Issues closed: ${issuesClosed}`);
 
@@ -59400,7 +59429,7 @@ async function run() {
     // Set outputs
     coreExports.setOutput('issues-created', issuesCreated.toString());
     coreExports.setOutput('issues-updated', issuesUpdated.toString());
-    coreExports.setOutput('alerts-grouped-by-cve', alertsGroupedByCve.toString());
+    coreExports.setOutput('alerts-grouped-by-ghsa', alertsGroupedByGhsa.toString());
     coreExports.setOutput('issues-reopened', issuesReopened.toString());
     coreExports.setOutput('issues-closed', issuesClosed.toString());
     coreExports.setOutput('alerts-processed', processedAlerts.length.toString());

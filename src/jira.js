@@ -433,6 +433,39 @@ export async function updateJiraIssue(
   dryRun = false,
   customComment = null
 ) {
+  // First, fetch the existing issue to check if it needs updating
+  // Only skip the comparison check if a custom comment is provided (manual update)
+  if (!customComment) {
+    try {
+      const issueResponse = await jiraClient.get(`/issue/${issueKey}`, {
+        params: {
+          fields: 'updated,comment'
+        }
+      })
+
+      const issueUpdatedAt = new Date(issueResponse.data.fields.updated)
+      const alertUpdatedAt = new Date(alert.updatedAt)
+
+      // If the alert hasn't been updated since the Jira issue was last updated,
+      // skip adding a redundant comment
+      if (alertUpdatedAt <= issueUpdatedAt) {
+        core.info(
+          `Alert #${alert.id} hasn't changed since last Jira update (${alertUpdatedAt.toISOString()} <= ${issueUpdatedAt.toISOString()}), skipping comment`
+        )
+        return { updated: false, skipped: true, reason: 'no_changes' }
+      }
+
+      core.info(
+        `Alert #${alert.id} has been updated (${alertUpdatedAt.toISOString()} > ${issueUpdatedAt.toISOString()}), adding comment`
+      )
+    } catch (error) {
+      core.warning(
+        `Could not fetch issue ${issueKey} for comparison, proceeding with update: ${error.message}`
+      )
+      // Continue with update if we can't fetch for comparison
+    }
+  }
+
   // If a custom comment is provided, use it (convert plain text to ADF if needed)
   // Otherwise, build the default alert-based comment
   const comment = customComment

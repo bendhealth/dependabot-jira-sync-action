@@ -200,13 +200,17 @@ export async function run() {
         if (existingIssue) {
           if (config.behavior.updateExisting) {
             core.info(`Found existing issue: ${existingIssue.key}`)
-            await updateJiraIssue(
+            const updateResult = await updateJiraIssue(
               jiraClient,
               existingIssue.key,
               parsedAlert,
               config.behavior.dryRun
             )
-            issuesUpdated++
+
+            // Only increment counter if we actually updated (not skipped due to no changes)
+            if (updateResult.updated) {
+              issuesUpdated++
+            }
           } else {
             core.info(
               `Skipping existing issue: ${existingIssue.key} (update-existing is false)`
