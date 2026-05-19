@@ -213,15 +213,15 @@ vulnerabilities maintain proper urgency.
 
 ## 📤 Outputs
 
-| Output                    | Description                                    | Example                                                                                                   |
-| ------------------------- | ---------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| `issues-created`          | Number of new Jira issues created              | `3`                                                                                                       |
-| `issues-updated`          | Number of existing issues updated              | `1`                                                                                                       |
-| `alerts-grouped-by-ghsa`  | Number of alerts grouped by GHSA ID            | `2`                                                                                                       |
-| `issues-reopened`         | Number of closed issues reopened               | `1`                                                                                                       |
-| `issues-closed`           | Number of issues closed automatically          | `2`                                                                                                       |
-| `alerts-processed`        | Total alerts processed                         | `4`                                                                                                       |
-| `summary`                 | Summary of the operation                       | `Created 3 new issues, updated 1 issue, grouped 2 alerts by GHSA, reopened 1 issue, and closed 2 issues` |
+| Output                   | Description                           | Example                                                                                                  |
+| ------------------------ | ------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `issues-created`         | Number of new Jira issues created     | `3`                                                                                                      |
+| `issues-updated`         | Number of existing issues updated     | `1`                                                                                                      |
+| `alerts-grouped-by-ghsa` | Number of alerts grouped by GHSA ID   | `2`                                                                                                      |
+| `issues-reopened`        | Number of closed issues reopened      | `1`                                                                                                      |
+| `issues-closed`          | Number of issues closed automatically | `2`                                                                                                      |
+| `alerts-processed`       | Total alerts processed                | `4`                                                                                                      |
+| `summary`                | Summary of the operation              | `Created 3 new issues, updated 1 issue, grouped 2 alerts by GHSA, reopened 1 issue, and closed 2 issues` |
 
 ## 🔧 Setup Requirements
 
@@ -369,7 +369,8 @@ and improving traceability.
    description instead of creating a duplicate
 3. **If the issue was closed**, it automatically reopens it with a comment
    explaining the new alert
-4. **Multiple repositories** can share the same GHSA ID; a single ticket will be made for each issue.
+4. **Multiple repositories** can share the same GHSA ID; a single ticket will be
+   made for each issue.
 
 ### Example Scenario
 
