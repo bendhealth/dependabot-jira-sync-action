@@ -1672,469 +1672,466 @@ describe('Security Tests', () => {
   })
 })
 
+describe('Retry Logic and Error Handling', () => {
+  let client
 
+  beforeEach(() => {
+    client = createJiraClient('https://test.atlassian.net', 'user', 'token')
+  })
 
-  describe('Retry Logic and Error Handling', () => {
-    let client
+  test('retries on HTTP 429 rate limit', async () => {
+    const errorHandler =
+      mockAxiosInstance.interceptors.response.use.mock.calls[0][1]
 
-    beforeEach(() => {
-      client = createJiraClient('https://test.atlassian.net', 'user', 'token')
-    })
+    mockAxiosInstance.request.mockResolvedValue({ data: { success: true } })
 
-    test('retries on HTTP 429 rate limit', async () => {
-      const errorHandler =
-        mockAxiosInstance.interceptors.response.use.mock.calls[0][1]
-
-      mockAxiosInstance.request.mockResolvedValue({ data: { success: true } })
-
-      const error429 = {
-        config: { metadata: { retryCount: 0 } },
-        response: {
-          status: 429,
-          statusText: 'Too Many Requests',
-          headers: {},
-          data: {}
-        }
+    const error429 = {
+      config: { metadata: { retryCount: 0 } },
+      response: {
+        status: 429,
+        statusText: 'Too Many Requests',
+        headers: {},
+        data: {}
       }
+    }
 
-      // Mock setTimeout to avoid actual delays
-      jest.useFakeTimers()
+    // Mock setTimeout to avoid actual delays
+    jest.useFakeTimers()
 
-      const retryPromise = errorHandler(error429)
+    const retryPromise = errorHandler(error429)
 
-      // Fast-forward time
-      await jest.advanceTimersByTimeAsync(1000) // 1 second for first retry
+    // Fast-forward time
+    await jest.advanceTimersByTimeAsync(1000) // 1 second for first retry
 
-      await expect(retryPromise).resolves.toBeDefined()
-      expect(mockCore.warning).toHaveBeenCalledWith(
-        expect.stringContaining('Jira API returned 429')
-      )
-      expect(mockAxiosInstance.request).toHaveBeenCalled()
+    await expect(retryPromise).resolves.toBeDefined()
+    expect(mockCore.warning).toHaveBeenCalledWith(
+      expect.stringContaining('Jira API returned 429')
+    )
+    expect(mockAxiosInstance.request).toHaveBeenCalled()
 
-      jest.useRealTimers()
-    })
+    jest.useRealTimers()
+  })
 
-    test('retries on HTTP 503 service unavailable', async () => {
-      const errorHandler =
-        mockAxiosInstance.interceptors.response.use.mock.calls[0][1]
+  test('retries on HTTP 503 service unavailable', async () => {
+    const errorHandler =
+      mockAxiosInstance.interceptors.response.use.mock.calls[0][1]
 
-      mockAxiosInstance.request.mockResolvedValue({ data: { success: true } })
+    mockAxiosInstance.request.mockResolvedValue({ data: { success: true } })
 
-      const error503 = {
-        config: { metadata: { retryCount: 0 } },
-        response: {
-          status: 503,
-          statusText: 'Service Unavailable',
-          headers: {},
-          data: {}
-        }
+    const error503 = {
+      config: { metadata: { retryCount: 0 } },
+      response: {
+        status: 503,
+        statusText: 'Service Unavailable',
+        headers: {},
+        data: {}
       }
+    }
 
-      jest.useFakeTimers()
-      const retryPromise = errorHandler(error503)
-      await jest.advanceTimersByTimeAsync(1000)
+    jest.useFakeTimers()
+    const retryPromise = errorHandler(error503)
+    await jest.advanceTimersByTimeAsync(1000)
 
-      await expect(retryPromise).resolves.toBeDefined()
-      expect(mockCore.warning).toHaveBeenCalledWith(
-        expect.stringContaining('503')
-      )
+    await expect(retryPromise).resolves.toBeDefined()
+    expect(mockCore.warning).toHaveBeenCalledWith(
+      expect.stringContaining('503')
+    )
 
-      jest.useRealTimers()
-    })
+    jest.useRealTimers()
+  })
 
-    test('uses exponential backoff (1s, 2s, 4s)', async () => {
-      const errorHandler =
-        mockAxiosInstance.interceptors.response.use.mock.calls[0][1]
+  test('uses exponential backoff (1s, 2s, 4s)', async () => {
+    const errorHandler =
+      mockAxiosInstance.interceptors.response.use.mock.calls[0][1]
 
-      jest.useFakeTimers()
+    jest.useFakeTimers()
 
-      // First retry
-      const error1 = {
-        config: { metadata: { retryCount: 0 } },
-        response: { status: 429, headers: {}, data: {} }
+    // First retry
+    const error1 = {
+      config: { metadata: { retryCount: 0 } },
+      response: { status: 429, headers: {}, data: {} }
+    }
+    errorHandler(error1)
+    expect(mockCore.warning).toHaveBeenCalledWith(
+      expect.stringContaining('1000ms')
+    )
+
+    // Second retry
+    const error2 = {
+      config: { metadata: { retryCount: 1 } },
+      response: { status: 429, headers: {}, data: {} }
+    }
+    errorHandler(error2)
+    expect(mockCore.warning).toHaveBeenCalledWith(
+      expect.stringContaining('2000ms')
+    )
+
+    // Third retry
+    const error3 = {
+      config: { metadata: { retryCount: 2 } },
+      response: { status: 429, headers: {}, data: {} }
+    }
+    errorHandler(error3)
+    expect(mockCore.warning).toHaveBeenCalledWith(
+      expect.stringContaining('4000ms')
+    )
+
+    jest.useRealTimers()
+  })
+
+  test('respects Retry-After header', async () => {
+    const errorHandler =
+      mockAxiosInstance.interceptors.response.use.mock.calls[0][1]
+
+    const errorWithRetryAfter = {
+      config: { metadata: { retryCount: 0 } },
+      response: {
+        status: 429,
+        headers: { 'retry-after': '10' }, // 10 seconds
+        data: {}
       }
-      errorHandler(error1)
-      expect(mockCore.warning).toHaveBeenCalledWith(
-        expect.stringContaining('1000ms')
-      )
+    }
 
-      // Second retry
-      const error2 = {
-        config: { metadata: { retryCount: 1 } },
-        response: { status: 429, headers: {}, data: {} }
+    jest.useFakeTimers()
+    errorHandler(errorWithRetryAfter)
+
+    expect(mockCore.warning).toHaveBeenCalledWith(
+      expect.stringContaining('10000ms') // 10 seconds in milliseconds
+    )
+
+    jest.useRealTimers()
+  })
+
+  test('stops retrying after max retries (3)', async () => {
+    const errorHandler =
+      mockAxiosInstance.interceptors.response.use.mock.calls[0][1]
+
+    const error = {
+      config: { metadata: { retryCount: 3 } }, // Already at max
+      response: {
+        status: 429,
+        statusText: 'Too Many Requests',
+        headers: {},
+        data: {}
       }
-      errorHandler(error2)
-      expect(mockCore.warning).toHaveBeenCalledWith(
-        expect.stringContaining('2000ms')
-      )
+    }
 
-      // Third retry
-      const error3 = {
-        config: { metadata: { retryCount: 2 } },
-        response: { status: 429, headers: {}, data: {} }
-      }
-      errorHandler(error3)
-      expect(mockCore.warning).toHaveBeenCalledWith(
-        expect.stringContaining('4000ms')
-      )
+    await expect(errorHandler(error)).rejects.toThrow('Jira API Error')
+    expect(mockAxiosInstance.request).not.toHaveBeenCalled()
+  })
 
-      jest.useRealTimers()
-    })
+  test('does not retry on non-retryable errors (400, 401, 404)', async () => {
+    const errorHandler =
+      mockAxiosInstance.interceptors.response.use.mock.calls[0][1]
 
-    test('respects Retry-After header', async () => {
-      const errorHandler =
-        mockAxiosInstance.interceptors.response.use.mock.calls[0][1]
-
-      const errorWithRetryAfter = {
-        config: { metadata: { retryCount: 0 } },
-        response: {
-          status: 429,
-          headers: { 'retry-after': '10' }, // 10 seconds
-          data: {}
-        }
-      }
-
-      jest.useFakeTimers()
-      errorHandler(errorWithRetryAfter)
-
-      expect(mockCore.warning).toHaveBeenCalledWith(
-        expect.stringContaining('10000ms') // 10 seconds in milliseconds
-      )
-
-      jest.useRealTimers()
-    })
-
-    test('stops retrying after max retries (3)', async () => {
-      const errorHandler =
-        mockAxiosInstance.interceptors.response.use.mock.calls[0][1]
+    for (const status of [400, 401, 404]) {
+      jest.clearAllMocks()
 
       const error = {
-        config: { metadata: { retryCount: 3 } }, // Already at max
+        config: { metadata: { retryCount: 0 } },
         response: {
-          status: 429,
-          statusText: 'Too Many Requests',
-          headers: {},
+          status,
+          statusText: 'Error',
           data: {}
         }
       }
 
       await expect(errorHandler(error)).rejects.toThrow('Jira API Error')
       expect(mockAxiosInstance.request).not.toHaveBeenCalled()
-    })
-
-    test('does not retry on non-retryable errors (400, 401, 404)', async () => {
-      const errorHandler =
-        mockAxiosInstance.interceptors.response.use.mock.calls[0][1]
-
-      for (const status of [400, 401, 404]) {
-        jest.clearAllMocks()
-
-        const error = {
-          config: { metadata: { retryCount: 0 } },
-          response: {
-            status,
-            statusText: 'Error',
-            data: {}
-          }
-        }
-
-        await expect(errorHandler(error)).rejects.toThrow('Jira API Error')
-        expect(mockAxiosInstance.request).not.toHaveBeenCalled()
-        expect(mockCore.warning).not.toHaveBeenCalled()
-      }
-    })
-
-    test('retries on 502 and 504 gateway errors', async () => {
-      const errorHandler =
-        mockAxiosInstance.interceptors.response.use.mock.calls[0][1]
-
-      jest.useFakeTimers()
-
-      for (const status of [502, 504]) {
-        jest.clearAllMocks()
-
-        const error = {
-          config: { metadata: { retryCount: 0 } },
-          response: {
-            status,
-            statusText: 'Gateway Error',
-            headers: {},
-            data: {}
-          }
-        }
-
-        const promise = errorHandler(error)
-        jest.advanceTimersByTime(1000)
-        await promise
-
-        expect(mockCore.warning).toHaveBeenCalledWith(
-          expect.stringContaining(`${status}`)
-        )
-      }
-
-      jest.useRealTimers()
-    })
+      expect(mockCore.warning).not.toHaveBeenCalled()
+    }
   })
 
+  test('retries on 502 and 504 gateway errors', async () => {
+    const errorHandler =
+      mockAxiosInstance.interceptors.response.use.mock.calls[0][1]
 
-  describe('Advanced Sanitization Tests', () => {
-    test('escapes all JQL special characters', async () => {
-      const jiraClient = {
-        get: jest.fn().mockResolvedValue({
-          data: {
-            issues: [],
-            total: 0
-          }
-        })
+    jest.useFakeTimers()
+
+    for (const status of [502, 504]) {
+      jest.clearAllMocks()
+
+      const error = {
+        config: { metadata: { retryCount: 0 } },
+        response: {
+          status,
+          statusText: 'Gateway Error',
+          headers: {},
+          data: {}
+        }
       }
 
-      // Test escaping of single quotes, double quotes, backslashes, and newlines
-      const dangerousLabel = `test'label"with\\backslash\nand\nnewlines`
-      await findDependabotIssues(jiraClient, 'TEST', dangerousLabel, true)
+      const promise = errorHandler(error)
+      jest.advanceTimersByTime(1000)
+      await promise
 
-      const jqlUsed = jiraClient.get.mock.calls[0][1].params.jql
-      // Should have escaped quotes and backslashes
-      expect(jqlUsed).toContain("\\'")
-      expect(jqlUsed).toContain('\\"')
-      expect(jqlUsed).toContain('\\\\')
-      // Newlines should be replaced with spaces
-      expect(jqlUsed).not.toContain('\n')
-    })
+      expect(mockCore.warning).toHaveBeenCalledWith(
+        expect.stringContaining(`${status}`)
+      )
+    }
 
-    test('sanitizes iframe and embed tags', async () => {
-      const jiraClient = {
-        post: jest.fn().mockResolvedValue({
-          data: { key: 'TEST-1' }
-        })
-      }
+    jest.useRealTimers()
+  })
+})
 
-      const maliciousAlert = {
-        id: '123',
-        title: '<iframe src="evil.com"></iframe>Test',
-        description: '<embed src="malware.swf"></embed>Description <object data="bad.pdf"></object>',
-        package: 'test-package',
-        ecosystem: 'npm',
-        severity: 'high',
-        url: 'https://github.com/owner/repo/security/dependabot/123',
-        createdAt: '2023-01-15T10:00:00Z'
-      }
+describe('Advanced Sanitization Tests', () => {
+  test('escapes all JQL special characters', async () => {
+    const jiraClient = {
+      get: jest.fn().mockResolvedValue({
+        data: {
+          issues: [],
+          total: 0
+        }
+      })
+    }
 
-      await createJiraIssue(
+    // Test escaping of single quotes, double quotes, backslashes, and newlines
+    const dangerousLabel = `test'label"with\\backslash\nand\nnewlines`
+    await findDependabotIssues(jiraClient, 'TEST', dangerousLabel, true)
+
+    const jqlUsed = jiraClient.get.mock.calls[0][1].params.jql
+    // Should have escaped quotes and backslashes
+    expect(jqlUsed).toContain("\\'")
+    expect(jqlUsed).toContain('\\"')
+    expect(jqlUsed).toContain('\\\\')
+    // Newlines should be replaced with spaces
+    expect(jqlUsed).not.toContain('\n')
+  })
+
+  test('sanitizes iframe and embed tags', async () => {
+    const jiraClient = {
+      post: jest.fn().mockResolvedValue({
+        data: { key: 'TEST-1' }
+      })
+    }
+
+    const maliciousAlert = {
+      id: '123',
+      title: '<iframe src="evil.com"></iframe>Test',
+      description:
+        '<embed src="malware.swf"></embed>Description <object data="bad.pdf"></object>',
+      package: 'test-package',
+      ecosystem: 'npm',
+      severity: 'high',
+      url: 'https://github.com/owner/repo/security/dependabot/123',
+      createdAt: '2023-01-15T10:00:00Z'
+    }
+
+    await createJiraIssue(
+      jiraClient,
+      {
+        projectKey: 'TEST',
+        issueType: 'Task',
+        dueDays: { critical: 1, high: 7, medium: 30, low: 90 }
+      },
+      maliciousAlert,
+      false
+    )
+
+    const issueData = jiraClient.post.mock.calls[0][1]
+    const summary = issueData.fields.summary
+    const descriptionJson = JSON.stringify(issueData.fields.description)
+
+    expect(summary).not.toContain('<iframe')
+    expect(summary).not.toContain('</iframe>')
+    expect(descriptionJson).not.toContain('<embed')
+    expect(descriptionJson).not.toContain('<object')
+  })
+
+  test('removes event handlers from text', async () => {
+    const jiraClient = {
+      post: jest.fn().mockResolvedValue({
+        data: { key: 'TEST-1' }
+      })
+    }
+
+    const maliciousAlert = {
+      id: '123',
+      title: '<div onclick="alert()">Test</div>',
+      description: 'Text with onerror="bad()" and onload="evil()"',
+      package: 'test-package',
+      ecosystem: 'npm',
+      severity: 'high',
+      url: 'https://github.com/owner/repo/security/dependabot/123',
+      createdAt: '2023-01-15T10:00:00Z'
+    }
+
+    await createJiraIssue(
+      jiraClient,
+      {
+        projectKey: 'TEST',
+        issueType: 'Task',
+        dueDays: { critical: 1, high: 7, medium: 30, low: 90 }
+      },
+      maliciousAlert,
+      false
+    )
+
+    const issueData = jiraClient.post.mock.calls[0][1]
+    const descriptionJson = JSON.stringify(issueData.fields.description)
+
+    expect(descriptionJson).not.toMatch(/on\w+\s*=/i)
+  })
+
+  test('validates and rejects HTTP (non-HTTPS) URLs', async () => {
+    const jiraClient = { post: jest.fn() }
+    const httpAlert = {
+      id: '123',
+      title: 'Test',
+      package: 'test-package',
+      ecosystem: 'npm',
+      severity: 'high',
+      url: 'http://github.com/owner/repo/security/dependabot/123', // HTTP not HTTPS
+      createdAt: '2023-01-15T10:00:00Z'
+    }
+
+    await expect(
+      createJiraIssue(
         jiraClient,
         {
           projectKey: 'TEST',
           issueType: 'Task',
           dueDays: { critical: 1, high: 7, medium: 30, low: 90 }
         },
-        maliciousAlert,
+        httpAlert,
         false
       )
+    ).rejects.toThrow('URL must use HTTPS protocol')
+  })
 
-      const issueData = jiraClient.post.mock.calls[0][1]
-      const summary = issueData.fields.summary
-      const descriptionJson = JSON.stringify(issueData.fields.description)
+  test('validates and rejects non-GitHub domains', async () => {
+    const jiraClient = { post: jest.fn() }
+    const badDomainAlert = {
+      id: '123',
+      title: 'Test',
+      package: 'test-package',
+      ecosystem: 'npm',
+      severity: 'high',
+      url: 'https://evil.com/fake/alert', // Not GitHub
+      createdAt: '2023-01-15T10:00:00Z'
+    }
 
-      expect(summary).not.toContain('<iframe')
-      expect(summary).not.toContain('</iframe>')
-      expect(descriptionJson).not.toContain('<embed')
-      expect(descriptionJson).not.toContain('<object')
-    })
-
-    test('removes event handlers from text', async () => {
-      const jiraClient = {
-        post: jest.fn().mockResolvedValue({
-          data: { key: 'TEST-1' }
-        })
-      }
-
-      const maliciousAlert = {
-        id: '123',
-        title: '<div onclick="alert()">Test</div>',
-        description: 'Text with onerror="bad()" and onload="evil()"',
-        package: 'test-package',
-        ecosystem: 'npm',
-        severity: 'high',
-        url: 'https://github.com/owner/repo/security/dependabot/123',
-        createdAt: '2023-01-15T10:00:00Z'
-      }
-
-      await createJiraIssue(
+    await expect(
+      createJiraIssue(
         jiraClient,
         {
           projectKey: 'TEST',
           issueType: 'Task',
           dueDays: { critical: 1, high: 7, medium: 30, low: 90 }
         },
-        maliciousAlert,
+        badDomainAlert,
         false
       )
+    ).rejects.toThrow('URL must be from github.com domain')
+  })
+})
 
-      const issueData = jiraClient.post.mock.calls[0][1]
-      const descriptionJson = JSON.stringify(issueData.fields.description)
-
-      expect(descriptionJson).not.toMatch(/on\w+\s*=/i)
-    })
-
-    test('validates and rejects HTTP (non-HTTPS) URLs', async () => {
-      const jiraClient = { post: jest.fn() }
-      const httpAlert = {
-        id: '123',
-        title: 'Test',
-        package: 'test-package',
-        ecosystem: 'npm',
-        severity: 'high',
-        url: 'http://github.com/owner/repo/security/dependabot/123', // HTTP not HTTPS
-        createdAt: '2023-01-15T10:00:00Z'
+describe('GHSA Extraction Tests', () => {
+  test('extracts GHSA ID in lowercase', () => {
+    const issue = {
+      key: 'TEST-1',
+      fields: {
+        description: {
+          type: 'doc',
+          content: [
+            {
+              type: 'paragraph',
+              content: [{ type: 'text', text: 'GHSA ID: ghsa-1234-5678-9abc' }]
+            }
+          ]
+        }
       }
+    }
 
-      await expect(
-        createJiraIssue(
-          jiraClient,
-          {
-            projectKey: 'TEST',
-            issueType: 'Task',
-            dueDays: { critical: 1, high: 7, medium: 30, low: 90 }
-          },
-          httpAlert,
-          false
-        )
-      ).rejects.toThrow('URL must use HTTPS protocol')
-    })
-
-    test('validates and rejects non-GitHub domains', async () => {
-      const jiraClient = { post: jest.fn() }
-      const badDomainAlert = {
-        id: '123',
-        title: 'Test',
-        package: 'test-package',
-        ecosystem: 'npm',
-        severity: 'high',
-        url: 'https://evil.com/fake/alert', // Not GitHub
-        createdAt: '2023-01-15T10:00:00Z'
-      }
-
-      await expect(
-        createJiraIssue(
-          jiraClient,
-          {
-            projectKey: 'TEST',
-            issueType: 'Task',
-            dueDays: { critical: 1, high: 7, medium: 30, low: 90 }
-          },
-          badDomainAlert,
-          false
-        )
-      ).rejects.toThrow('URL must be from github.com domain')
-    })
+    const result = extractGhsaIdFromIssue(issue)
+    expect(result).toBe('GHSA-1234-5678-9ABC') // Should be uppercase
   })
 
-  describe('GHSA Extraction Tests', () => {
-    test('extracts GHSA ID in lowercase', () => {
-      const issue = {
-        key: 'TEST-1',
-        fields: {
-          description: {
-            type: 'doc',
-            content: [
-              {
-                type: 'paragraph',
-                content: [{ type: 'text', text: 'GHSA ID: ghsa-1234-5678-9abc' }]
-              }
-            ]
-          }
+  test('extracts GHSA ID in mixed case', () => {
+    const issue = {
+      fields: {
+        description: {
+          type: 'doc',
+          content: [
+            {
+              type: 'paragraph',
+              content: [{ type: 'text', text: 'Found GhSa-AbCd-1234-XyZw' }]
+            }
+          ]
         }
       }
+    }
 
-      const result = extractGhsaIdFromIssue(issue)
-      expect(result).toBe('GHSA-1234-5678-9ABC') // Should be uppercase
-    })
+    const result = extractGhsaIdFromIssue(issue)
+    expect(result).toBe('GHSA-ABCD-1234-XYZW')
+  })
 
-    test('extracts GHSA ID in mixed case', () => {
-      const issue = {
-        fields: {
-          description: {
-            type: 'doc',
-            content: [
-              {
-                type: 'paragraph',
-                content: [{ type: 'text', text: 'Found GhSa-AbCd-1234-XyZw' }]
-              }
-            ]
-          }
+  test('returns null when GHSA ID missing', () => {
+    const issue = {
+      fields: {
+        description: {
+          type: 'doc',
+          content: [
+            {
+              type: 'paragraph',
+              content: [{ type: 'text', text: 'No GHSA here' }]
+            }
+          ]
         }
       }
+    }
 
-      const result = extractGhsaIdFromIssue(issue)
-      expect(result).toBe('GHSA-ABCD-1234-XYZW')
-    })
+    const result = extractGhsaIdFromIssue(issue)
+    expect(result).toBeNull()
+  })
 
-    test('returns null when GHSA ID missing', () => {
-      const issue = {
-        fields: {
-          description: {
-            type: 'doc',
-            content: [
-              {
-                type: 'paragraph',
-                content: [{ type: 'text', text: 'No GHSA here' }]
-              }
-            ]
-          }
+  test('extracts first GHSA ID when multiple present', () => {
+    const issue = {
+      fields: {
+        description: {
+          type: 'doc',
+          content: [
+            {
+              type: 'paragraph',
+              content: [
+                {
+                  type: 'text',
+                  text: 'GHSA-1111-2222-3333 and GHSA-4444-5555-6666'
+                }
+              ]
+            }
+          ]
         }
       }
+    }
 
-      const result = extractGhsaIdFromIssue(issue)
-      expect(result).toBeNull()
-    })
+    const result = extractGhsaIdFromIssue(issue)
+    expect(result).toBe('GHSA-1111-2222-3333') // First one
+  })
 
-    test('extracts first GHSA ID when multiple present', () => {
-      const issue = {
-        fields: {
-          description: {
-            type: 'doc',
-            content: [
-              {
-                type: 'paragraph',
-                content: [
-                  {
-                    type: 'text',
-                    text: 'GHSA-1111-2222-3333 and GHSA-4444-5555-6666'
-                  }
-                ]
-              }
-            ]
-          }
+  test('handles malformed GHSA IDs gracefully', () => {
+    const issue = {
+      fields: {
+        description: {
+          type: 'doc',
+          content: [
+            {
+              type: 'paragraph',
+              content: [
+                {
+                  type: 'text',
+                  text: 'GHSA-123 GHSA-12345-6789 GHSA-toolong-value-here'
+                }
+              ]
+            }
+          ]
         }
       }
+    }
 
-      const result = extractGhsaIdFromIssue(issue)
-      expect(result).toBe('GHSA-1111-2222-3333') // First one
-    })
-
-    test('handles malformed GHSA IDs gracefully', () => {
-      const issue = {
-        fields: {
-          description: {
-            type: 'doc',
-            content: [
-              {
-                type: 'paragraph',
-                content: [
-                  {
-                    type: 'text',
-                    text: 'GHSA-123 GHSA-12345-6789 GHSA-toolong-value-here'
-                  }
-                ]
-              }
-            ]
-          }
-        }
-      }
-
-      const result = extractGhsaIdFromIssue(issue)
-      expect(result).toBeNull() // None match the proper format
-    })
-
+    const result = extractGhsaIdFromIssue(issue)
+    expect(result).toBeNull() // None match the proper format
+  })
 
   describe('appendAlertUrlToIssue', () => {
     test('appends new alert URL to existing issue', async () => {
@@ -2147,9 +2144,7 @@ describe('Security Tests', () => {
               content: [
                 {
                   type: 'paragraph',
-                  content: [
-                    { type: 'text', text: 'Existing content' }
-                  ]
+                  content: [{ type: 'text', text: 'Existing content' }]
                 }
               ]
             }
@@ -2191,7 +2186,8 @@ describe('Security Tests', () => {
     })
 
     test('skips when URL already exists', async () => {
-      const existingUrl = 'https://github.com/owner/repo/security/dependabot/456'
+      const existingUrl =
+        'https://github.com/owner/repo/security/dependabot/456'
 
       mockAxiosInstance.get.mockResolvedValue({
         data: {
@@ -2201,9 +2197,7 @@ describe('Security Tests', () => {
               content: [
                 {
                   type: 'paragraph',
-                  content: [
-                    { type: 'text', text: existingUrl }
-                  ]
+                  content: [{ type: 'text', text: existingUrl }]
                 }
               ]
             }
@@ -2330,9 +2324,7 @@ describe('Security Tests', () => {
     test('returns false when transition not available', async () => {
       mockAxiosInstance.get.mockResolvedValue({
         data: {
-          transitions: [
-            { id: '2', name: 'Close', to: { name: 'Closed' } }
-          ]
+          transitions: [{ id: '2', name: 'Close', to: { name: 'Closed' } }]
         }
       })
 
@@ -2351,9 +2343,7 @@ describe('Security Tests', () => {
     test('handles case-insensitive transition names', async () => {
       mockAxiosInstance.get.mockResolvedValue({
         data: {
-          transitions: [
-            { id: '1', name: 'REOPEN', to: { name: 'Open' } }
-          ]
+          transitions: [{ id: '1', name: 'REOPEN', to: { name: 'Open' } }]
         }
       })
 
@@ -2473,6 +2463,4 @@ describe('Security Tests', () => {
       expect(mockAxiosInstance.get).toHaveBeenCalledTimes(3)
     })
   })
-
-  })
-
+})
