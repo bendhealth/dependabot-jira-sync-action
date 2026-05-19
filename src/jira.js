@@ -2,16 +2,44 @@ import * as core from '@actions/core'
 import axios from 'axios'
 
 /**
- * Sanitize input for use in JQL queries to prevent injection
- * @param {string} input - User input to sanitize
- * @returns {string} Sanitized input safe for JQL
+ * Escape input for use in JQL queries to prevent injection
+ * This escapes special JQL characters according to Atlassian documentation
+ * @param {string} input - User input to escape
+ * @returns {string} Escaped input safe for JQL
  */
-function sanitizeForJQL(input) {
+function escapeForJQL(input) {
   if (!input || typeof input !== 'string') {
     return ''
   }
-  // Remove or escape characters that could be used for JQL injection
-  return input.replace(/['"\\]/g, '').trim()
+  // Escape special JQL characters: quotes, backslashes, and other operators
+  // According to Jira JQL documentation, we need to escape quotes and backslashes
+  // Also remove control characters and newlines that could break JQL syntax
+  return input
+    .replace(/\\/g, '\\\\') // Escape backslashes first
+    .replace(/"/g, '\\"') // Escape double quotes
+    .replace(/'/g, "\\'") // Escape single quotes
+    .replace(/[\n\r\t]/g, ' ') // Replace newlines/tabs with spaces
+    .trim()
+}
+
+/**
+ * Validate that a string is safe for use in JQL (alphanumeric, dash, underscore only)
+ * Use this for project keys and other structured fields
+ * @param {string} input - Input to validate
+ * @returns {string} Validated input
+ * @throws {Error} If input contains unsafe characters
+ */
+function validateJQLSafeString(input) {
+  if (!input || typeof input !== 'string') {
+    throw new Error('Input must be a non-empty string')
+  }
+  // Only allow alphanumeric, dash, and underscore (safe for project keys, etc.)
+  if (!/^[A-Z0-9_-]+$/i.test(input)) {
+    throw new Error(
+      `Input contains unsafe characters: ${input}. Only alphanumeric, dash, and underscore allowed.`
+    )
+  }
+  return input
 }
 
 /**
@@ -21,6 +49,81 @@ function sanitizeForJQL(input) {
  */
 function validateProjectKey(projectKey) {
   return /^[A-Z0-9_-]+$/i.test(projectKey)
+}
+
+/**
+ * Sanitize text for safe use in Jira ADF (Atlassian Document Format)
+ * Removes potentially dangerous content and limits length
+ * @param {string} text - Text to sanitize
+ * @param {number} maxLength - Maximum allowed length (default 5000)
+ * @returns {string} Sanitized text
+ */
+function sanitizeADFText(text, maxLength = 5000) {
+  if (!text || typeof text !== 'string') {
+    return ''
+  }
+
+  // Remove control characters except newlines and tabs
+  let sanitized = text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
+
+  // Remove any HTML/script tags or event handlers (defense in depth)
+  // Remove complete script tags
+  sanitized = sanitized.replace(/<script[^>]*>.*?<\/script>/gi, '')
+  // Remove any remaining opening or closing script tags
+  sanitized = sanitized.replace(/<\/?script[^>]*>/gi, '')
+  // Remove other dangerous tags
+  sanitized = sanitized.replace(/<\/?iframe[^>]*>/gi, '')
+  sanitized = sanitized.replace(/<\/?object[^>]*>/gi, '')
+  sanitized = sanitized.replace(/<\/?embed[^>]*>/gi, '')
+  // Remove event handlers
+  sanitized = sanitized.replace(/on\w+\s*=/gi, '')
+
+  // Limit length to prevent DoS
+  if (sanitized.length > maxLength) {
+    sanitized = sanitized.substring(0, maxLength) + '... (truncated)'
+  }
+
+  return sanitized.trim()
+}
+
+/**
+ * Validate and sanitize an alert ID (must be positive integer)
+ * @param {number|string} alertId - Alert ID to validate
+ * @returns {string} Validated alert ID as string
+ * @throws {Error} If alert ID is invalid
+ */
+function validateAlertId(alertId) {
+  const id = parseInt(alertId, 10)
+  if (isNaN(id) || id < 1) {
+    throw new Error(`Invalid alert ID: ${alertId}. Must be a positive integer.`)
+  }
+  return id.toString()
+}
+
+/**
+ * Validate and sanitize URL
+ * @param {string} url - URL to validate
+ * @returns {string} Validated URL
+ * @throws {Error} If URL is invalid
+ */
+function validateUrl(url) {
+  if (!url || typeof url !== 'string') {
+    throw new Error('URL must be a non-empty string')
+  }
+
+  try {
+    const parsed = new URL(url)
+    // Only allow https URLs from github.com
+    if (parsed.protocol !== 'https:') {
+      throw new Error('URL must use HTTPS protocol')
+    }
+    if (!parsed.hostname.endsWith('github.com')) {
+      throw new Error('URL must be from github.com domain')
+    }
+    return parsed.href
+  } catch (error) {
+    throw new Error(`Invalid URL: ${url}. ${error.message}`)
+  }
 }
 
 /**
@@ -52,26 +155,75 @@ export function createJiraClient(jiraUrl, username, apiToken) {
     headers: {
       'Content-Type': 'application/json',
       Accept: 'application/json'
-    }
+    },
+    timeout: 30000 // 30 second timeout (Item 18)
   })
 
-  // Add response interceptor for error handling
+  // Add request interceptor for retry logic with exponential backoff (Item 10)
+  client.interceptors.request.use(async (config) => {
+    // Track retry state in the config
+    config.metadata = config.metadata || {}
+    config.metadata.retryCount = config.metadata.retryCount || 0
+    return config
+  })
+
+  // Add response interceptor for error handling and retry logic
   client.interceptors.response.use(
     (response) => response,
-    (error) => {
+    async (error) => {
+      const config = error.config || {}
       const status = error.response?.status
       const statusText = error.response?.statusText
       const errorMessages = error.response?.data?.errorMessages?.join(', ')
       const message = error.response?.data?.message
       const errors = error.response?.data?.errors
 
-      let errorDetails = `Status: ${status} ${statusText}`
-      if (errorMessages) errorDetails += ` | Error Messages: ${errorMessages}`
-      if (message) errorDetails += ` | Message: ${message}`
-      if (errors) errorDetails += ` | Errors: ${JSON.stringify(errors)}`
-      if (error.response?.data)
-        errorDetails += ` | Response: ${JSON.stringify(error.response.data)}`
+      // Retry logic for rate limiting and transient errors (Item 10)
+      const maxRetries = 3
+      const retryableStatuses = [429, 503, 502, 504] // Rate limit, service unavailable, bad gateway, gateway timeout
+      const retryCount = (config.metadata && config.metadata.retryCount) || 0
 
+      if (retryableStatuses.includes(status) && retryCount < maxRetries) {
+        config.metadata.retryCount = retryCount + 1
+
+        // Exponential backoff: 1s, 2s, 4s
+        const delay = Math.pow(2, retryCount) * 1000
+
+        // Check for Retry-After header (used by rate limiting)
+        const retryAfter = error.response?.headers['retry-after']
+        const actualDelay = retryAfter ? parseInt(retryAfter, 10) * 1000 : delay
+
+        core.warning(
+          `Jira API returned ${status}, retrying in ${actualDelay}ms (attempt ${retryCount + 1}/${maxRetries})`
+        )
+
+        await new Promise((resolve) => setTimeout(resolve, actualDelay))
+        return client.request(config)
+      }
+
+      // Sanitize error details - avoid exposing full response which may contain sensitive data
+      let errorDetails = `Status: ${status} ${statusText}`
+      if (errorMessages) {
+        // Truncate long error messages to prevent log flooding
+        const truncated =
+          errorMessages.length > 500
+            ? errorMessages.substring(0, 500) + '...'
+            : errorMessages
+        errorDetails += ` | Error Messages: ${truncated}`
+      }
+      if (message) {
+        // Truncate long messages
+        const truncated =
+          message.length > 200 ? message.substring(0, 200) + '...' : message
+        errorDetails += ` | Message: ${truncated}`
+      }
+      if (errors) {
+        // Only include field names, not values (values might be sensitive)
+        const fieldNames = Object.keys(errors).join(', ')
+        errorDetails += ` | Error Fields: ${fieldNames}`
+      }
+
+      // Do NOT log full response data as it may contain sensitive information
       core.error(`Jira API Error: ${errorDetails}`)
       throw new Error(`Jira API Error: ${errorDetails}`)
     }
@@ -141,10 +293,27 @@ export async function createJiraIssue(
 ) {
   const { projectKey, issueType, priority, labels, assignee } = config
 
+  // Validate and sanitize alert data from external API
+  const sanitizedAlert = {
+    id: validateAlertId(alert.id),
+    title: sanitizeADFText(alert.title, 200),
+    package: sanitizeADFText(alert.package, 200),
+    ecosystem: sanitizeADFText(alert.ecosystem, 100),
+    severity: sanitizeADFText(alert.severity, 50),
+    vulnerableVersionRange: sanitizeADFText(alert.vulnerableVersionRange, 200),
+    firstPatchedVersion: sanitizeADFText(alert.firstPatchedVersion, 100),
+    description: sanitizeADFText(alert.description, 5000),
+    cveId: alert.cveId ? sanitizeADFText(alert.cveId, 50) : null,
+    ghsaId: alert.ghsaId ? sanitizeADFText(alert.ghsaId, 50) : null,
+    url: validateUrl(alert.url),
+    cvss: alert.cvss ? parseFloat(alert.cvss) : null,
+    createdAt: alert.createdAt
+  }
+
   const dueDate = calculateDueDate(
-    alert.severity,
+    sanitizedAlert.severity,
     config.dueDays,
-    alert.createdAt
+    sanitizedAlert.createdAt
   )
 
   const description = {
@@ -159,7 +328,7 @@ export async function createJiraIssue(
         content: [
           {
             type: 'text',
-            text: `Dependabot Security Alert #${alert.id}`
+            text: `Dependabot Security Alert #${sanitizedAlert.id}`
           }
         ]
       },
@@ -177,7 +346,7 @@ export async function createJiraIssue(
           },
           {
             type: 'text',
-            text: alert.package
+            text: sanitizedAlert.package
           }
         ]
       },
@@ -191,7 +360,7 @@ export async function createJiraIssue(
           },
           {
             type: 'text',
-            text: alert.ecosystem
+            text: sanitizedAlert.ecosystem
           }
         ]
       },
@@ -205,7 +374,7 @@ export async function createJiraIssue(
           },
           {
             type: 'text',
-            text: alert.severity.toUpperCase()
+            text: sanitizedAlert.severity.toUpperCase()
           }
         ]
       },
@@ -219,7 +388,7 @@ export async function createJiraIssue(
           },
           {
             type: 'text',
-            text: alert.vulnerableVersionRange || 'Not available'
+            text: sanitizedAlert.vulnerableVersionRange || 'Not available'
           }
         ]
       },
@@ -233,7 +402,7 @@ export async function createJiraIssue(
           },
           {
             type: 'text',
-            text: alert.firstPatchedVersion || 'Not available'
+            text: sanitizedAlert.firstPatchedVersion || 'Not available'
           }
         ]
       },
@@ -258,11 +427,11 @@ export async function createJiraIssue(
         content: [
           {
             type: 'text',
-            text: alert.description
+            text: sanitizedAlert.description
           }
         ]
       },
-      ...(alert.cvss
+      ...(sanitizedAlert.cvss
         ? [
             {
               type: 'paragraph',
@@ -278,13 +447,13 @@ export async function createJiraIssue(
                 },
                 {
                   type: 'text',
-                  text: alert.cvss.toString()
+                  text: sanitizedAlert.cvss.toString()
                 }
               ]
             }
           ]
         : []),
-      ...(alert.cveId
+      ...(sanitizedAlert.cveId
         ? [
             {
               type: 'paragraph',
@@ -300,13 +469,13 @@ export async function createJiraIssue(
                 },
                 {
                   type: 'text',
-                  text: alert.cveId
+                  text: sanitizedAlert.cveId
                 }
               ]
             }
           ]
         : []),
-      ...(alert.ghsaId
+      ...(sanitizedAlert.ghsaId
         ? [
             {
               type: 'paragraph',
@@ -322,7 +491,7 @@ export async function createJiraIssue(
                 },
                 {
                   type: 'text',
-                  text: alert.ghsaId
+                  text: sanitizedAlert.ghsaId
                 }
               ]
             }
@@ -342,12 +511,12 @@ export async function createJiraIssue(
           },
           {
             type: 'text',
-            text: alert.url,
+            text: sanitizedAlert.url,
             marks: [
               {
                 type: 'link',
                 attrs: {
-                  href: alert.url
+                  href: sanitizedAlert.url
                 }
               }
             ]
@@ -377,7 +546,7 @@ export async function createJiraIssue(
   const issueData = {
     fields: {
       project: { key: projectKey },
-      summary: `Dependabot Alert #${alert.id}: ${alert.title}`,
+      summary: `Dependabot Alert #${sanitizedAlert.id}: ${sanitizedAlert.title}`,
       description,
       issuetype: { name: issueType },
       duedate: dueDate
@@ -385,7 +554,7 @@ export async function createJiraIssue(
   }
 
   // Priority is optional - only include if provided (some next-gen projects don't support it)
-  const resolvedPriority = resolvePriority(priority, alert.severity)
+  const resolvedPriority = resolvePriority(priority, sanitizedAlert.severity)
   if (resolvedPriority) {
     issueData.fields.priority = { name: resolvedPriority }
   }
@@ -435,6 +604,7 @@ export async function updateJiraIssue(
 ) {
   // First, fetch the existing issue to check if it needs updating
   // Only skip the comparison check if a custom comment is provided (manual update)
+  // Item 12: Fetch issue even in dry run mode for accurate simulation
   if (!customComment) {
     try {
       const issueResponse = await jiraClient.get(`/issue/${issueKey}`, {
@@ -449,14 +619,16 @@ export async function updateJiraIssue(
       // If the alert hasn't been updated since the Jira issue was last updated,
       // skip adding a redundant comment
       if (alertUpdatedAt <= issueUpdatedAt) {
+        const logPrefix = dryRun ? '[DRY RUN] ' : ''
         core.info(
-          `Alert #${alert.id} hasn't changed since last Jira update (${alertUpdatedAt.toISOString()} <= ${issueUpdatedAt.toISOString()}), skipping comment`
+          `${logPrefix}Alert #${alert.id} hasn't changed since last Jira update (${alertUpdatedAt.toISOString()} <= ${issueUpdatedAt.toISOString()}), skipping comment`
         )
-        return { updated: false, skipped: true, reason: 'no_changes' }
+        return { updated: false, skipped: true, reason: 'no_changes', dryRun }
       }
 
+      const logPrefix = dryRun ? '[DRY RUN] ' : ''
       core.info(
-        `Alert #${alert.id} has been updated (${alertUpdatedAt.toISOString()} > ${issueUpdatedAt.toISOString()}), adding comment`
+        `${logPrefix}Alert #${alert.id} has been updated (${alertUpdatedAt.toISOString()} > ${issueUpdatedAt.toISOString()}), ${dryRun ? 'would add' : 'adding'} comment`
       )
     } catch (error) {
       core.warning(
@@ -681,7 +853,8 @@ export async function findDependabotIssues(
     throw new Error(`Invalid project key format: ${projectKey}`)
   }
 
-  const sanitizedProjectKey = sanitizeForJQL(projectKey)
+  // Use validated project key (already checked by validateProjectKey)
+  const validatedProjectKey = validateJQLSafeString(projectKey)
 
   // Build label filter from configured labels
   // Parse comma-separated labels and create JQL conditions
@@ -694,21 +867,21 @@ export async function findDependabotIssues(
 
   // Build JQL query with label conditions
   // Use AND to match issues that have all configured labels
-  let jql = `project = "${sanitizedProjectKey}"`
+  let jql = `project = "${validatedProjectKey}"`
 
   if (labelArray.length > 0) {
     const labelConditions = labelArray
-      .map((label) => `labels = "${sanitizeForJQL(label)}"`)
+      .map((label) => `labels = "${escapeForJQL(label)}"`)
       .join(' AND ')
     jql += ` AND ${labelConditions}`
   }
 
-  // Filter by repository URL pattern to only get issues for this specific repo
-  // This prevents matching issues from other repositories
-  if (owner && repo) {
-    const repoUrlPattern = `https://github.com/${sanitizeForJQL(owner)}/${sanitizeForJQL(repo)}/security/dependabot/`
-    jql += ` AND description ~ "${repoUrlPattern}"`
-    core.debug(`Filtering to repository: ${owner}/${repo}`)
+  // Filter by repository to only get issues for this specific repo
+  // Instead of using URL pattern in JQL (which is injectable), we'll filter results after fetching
+  // This is more secure and avoids JQL injection through owner/repo names
+  const filterByRepo = owner && repo
+  if (filterByRepo) {
+    core.debug(`Will filter results to repository: ${owner}/${repo}`)
   }
 
   // Optionally filter to only unresolved issues
@@ -759,6 +932,19 @@ export async function findDependabotIssues(
 
       // Continue if there are more issues to fetch
     } while (startAt < total)
+
+    // If repository filtering is requested, filter results by checking URLs in descriptions
+    // This is done post-fetch to avoid JQL injection through owner/repo names
+    if (filterByRepo) {
+      const repoUrlPattern = `https://github.com/${owner}/${repo}/security/dependabot/`
+      allIssues = allIssues.filter((issue) => {
+        const urls = extractAllAlertUrlsFromIssue(issue)
+        return urls.some((url) => url.startsWith(repoUrlPattern))
+      })
+      core.debug(
+        `Filtered to ${allIssues.length} issues for repository ${owner}/${repo}`
+      )
+    }
 
     core.info(
       `Found ${allIssues.length} ${scopeMsg} Dependabot issues${repoMsg}`
