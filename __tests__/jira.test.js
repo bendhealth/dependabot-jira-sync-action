@@ -496,9 +496,7 @@ describe('Jira API Functions', () => {
       // Mock the transitions GET
       mockAxiosInstance.get.mockResolvedValueOnce({
         data: {
-          transitions: [
-            { id: '1', name: 'Reopened', to: { name: 'Open' } }
-          ]
+          transitions: [{ id: '1', name: 'Reopened', to: { name: 'Open' } }]
         }
       })
       mockAxiosInstance.post.mockResolvedValue({ data: {} })

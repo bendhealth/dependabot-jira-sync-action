@@ -500,7 +500,10 @@ describe('Dependabot Jira Sync', () => {
     mockJira.extractAlertUrlFromIssue.mockReturnValue(
       'https://github.com/test/alert/1'
     )
-    mockJira.updateJiraIssue.mockResolvedValue({ updated: true, reopened: true })
+    mockJira.updateJiraIssue.mockResolvedValue({
+      updated: true,
+      reopened: true
+    })
 
     await run()
 
