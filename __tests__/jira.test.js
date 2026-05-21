@@ -450,95 +450,16 @@ describe('Jira API Functions', () => {
   describe('updateJiraIssue', () => {
     const mockAlert = {
       id: 42,
-      state: 'dismissed',
-      updatedAt: '2023-01-15T10:00:00Z',
-      dismissedAt: '2023-01-14T15:30:00Z',
-      dismissedReason: 'tolerable_risk',
-      dismissedComment: 'Risk accepted by security team',
-      url: 'https://github.com/company/repo/security/dependabot/42'
+      state: 'open',
+      url: 'https://github.com/company/repo/security/dependabot/42',
+      updatedAt: '2023-01-15T10:00:00Z'
     }
 
-    it('should update Jira issue with comment when alert has been updated', async () => {
-      // Mock the GET request to fetch issue (issue updated at 2023-01-10)
+    it('should check issue status and not add comments when issue is open', async () => {
       mockAxiosInstance.get.mockResolvedValue({
         data: {
           fields: {
-            updated: '2023-01-10T10:00:00Z' // Issue updated before alert
-          }
-        }
-      })
-      mockAxiosInstance.post.mockResolvedValue({})
-
-      const result = await updateJiraIssue(
-        mockAxiosInstance,
-        'SEC-123',
-        mockAlert, // Alert updated at 2023-01-15
-        false
-      )
-
-      // Should fetch the issue first
-      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/issue/SEC-123', {
-        params: {
-          fields: 'updated,comment'
-        }
-      })
-
-      // Should add comment since alert is newer
-      expect(mockAxiosInstance.post).toHaveBeenCalledWith(
-        '/issue/SEC-123/comment',
-        {
-          body: expect.objectContaining({
-            type: 'doc',
-            version: 1,
-            content: expect.arrayContaining([
-              expect.objectContaining({
-                type: 'heading',
-                attrs: {
-                  level: 3
-                },
-                content: expect.arrayContaining([
-                  expect.objectContaining({
-                    type: 'text',
-                    text: 'Dependabot Alert Updated'
-                  })
-                ])
-              })
-            ])
-          })
-        }
-      )
-
-      const commentBody = mockAxiosInstance.post.mock.calls[0][1].body
-      // Check that the comment contains the expected content in ADF format
-      expect(commentBody.content).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            type: 'paragraph',
-            content: expect.arrayContaining([
-              expect.objectContaining({
-                type: 'text',
-                text: 'Current Status: ',
-                marks: [{ type: 'strong' }]
-              }),
-              expect.objectContaining({
-                type: 'text',
-                text: 'dismissed'
-              })
-            ])
-          })
-        ])
-      )
-
-      expect(result).toEqual({ updated: true })
-      expect(mockCore.info).toHaveBeenCalledWith('Updated Jira issue: SEC-123')
-    })
-
-    it('should skip update when alert has not changed since last Jira update', async () => {
-      // Mock the GET request to fetch issue (issue updated AFTER alert)
-      mockAxiosInstance.get.mockResolvedValue({
-        data: {
-          fields: {
-            updated: '2023-01-20T10:00:00Z' // Issue updated after alert (2023-01-15)
+            status: { name: 'Open' }
           }
         }
       })
@@ -550,31 +471,56 @@ describe('Jira API Functions', () => {
         false
       )
 
-      // Should fetch the issue first
+      // Should fetch the issue to check status
       expect(mockAxiosInstance.get).toHaveBeenCalledWith('/issue/SEC-123', {
         params: {
-          fields: 'updated,comment'
+          fields: 'status'
         }
       })
 
-      // Should NOT add a comment since alert is older
+      // Should NOT add a comment (updateJiraIssue no longer adds comments)
       expect(mockAxiosInstance.post).not.toHaveBeenCalled()
 
-      expect(result).toEqual({
-        updated: false,
-        skipped: true,
-        reason: 'no_changes',
-        dryRun: false
-      })
-      expect(mockCore.info).toHaveBeenCalledWith(
-        expect.stringContaining("hasn't changed since last Jira update")
-      )
+      expect(result).toEqual({ updated: false, reopened: false, dryRun: false })
     })
 
-    it('should proceed with update if issue fetch fails', async () => {
-      // Mock the GET request to fail
+    it('should reopen closed issue', async () => {
+      // Mock the issue GET to return closed status
+      mockAxiosInstance.get.mockResolvedValueOnce({
+        data: {
+          fields: {
+            status: { name: 'Done' }
+          }
+        }
+      })
+      // Mock the transitions GET
+      mockAxiosInstance.get.mockResolvedValueOnce({
+        data: {
+          transitions: [
+            { id: '1', name: 'Reopened', to: { name: 'Open' } }
+          ]
+        }
+      })
+      mockAxiosInstance.post.mockResolvedValue({ data: {} })
+
+      const result = await updateJiraIssue(
+        mockAxiosInstance,
+        'SEC-123',
+        mockAlert,
+        false,
+        'Reopened'
+      )
+
+      // Should have reopened the issue
+      expect(result).toEqual({
+        updated: false,
+        reopened: true,
+        dryRun: false
+      })
+    })
+
+    it('should handle fetch errors gracefully', async () => {
       mockAxiosInstance.get.mockRejectedValue(new Error('Fetch failed'))
-      mockAxiosInstance.post.mockResolvedValue({})
 
       const result = await updateJiraIssue(
         mockAxiosInstance,
@@ -586,18 +532,24 @@ describe('Jira API Functions', () => {
       // Should have tried to fetch
       expect(mockAxiosInstance.get).toHaveBeenCalled()
 
-      // Should still add comment (fallback behavior)
-      expect(mockAxiosInstance.post).toHaveBeenCalled()
+      // Should NOT add comment or reopen (cannot determine status)
+      expect(mockAxiosInstance.post).not.toHaveBeenCalled()
 
-      expect(result).toEqual({ updated: true })
+      expect(result).toEqual({ updated: false, reopened: false, dryRun: false })
       expect(mockCore.warning).toHaveBeenCalledWith(
-        expect.stringContaining(
-          'Could not fetch issue SEC-123 for comparison, proceeding with update'
-        )
+        expect.stringContaining('Could not fetch issue SEC-123 to check status')
       )
     })
 
     it('should handle dry run mode', async () => {
+      mockAxiosInstance.get.mockResolvedValue({
+        data: {
+          fields: {
+            status: { name: 'Open' }
+          }
+        }
+      })
+
       const result = await updateJiraIssue(
         mockAxiosInstance,
         'SEC-123',
@@ -606,23 +558,7 @@ describe('Jira API Functions', () => {
       )
 
       expect(mockAxiosInstance.post).not.toHaveBeenCalled()
-      expect(result).toEqual({ updated: true, dryRun: true })
-      expect(mockCore.info).toHaveBeenCalledWith(
-        '[DRY RUN] Would update Jira issue SEC-123 with comment'
-      )
-    })
-
-    it('should handle update errors', async () => {
-      const apiError = new Error('Jira update failed')
-      mockAxiosInstance.post.mockRejectedValue(apiError)
-
-      await expect(
-        updateJiraIssue(mockAxiosInstance, 'SEC-123', mockAlert, false)
-      ).rejects.toThrow('Jira update failed')
-
-      expect(mockCore.error).toHaveBeenCalledWith(
-        'Failed to update Jira issue SEC-123: Jira update failed'
-      )
+      expect(result).toEqual({ updated: false, reopened: false, dryRun: true })
     })
   })
 

@@ -71941,245 +71941,65 @@ async function createJiraIssue(
 
 /**
  * Update an existing Jira issue for a Dependabot alert
+ * Checks if the issue is closed and reopens it if necessary
  * @param {Object} jiraClient - Jira API client
  * @param {string} issueKey - Jira issue key
- * @param {Object} alert - Parsed Dependabot alert
+ * @param {Object} alert - Parsed Dependabot alert (used for logging only)
  * @param {boolean} dryRun - Whether this is a dry run
- * @returns {Promise<Object>} Update result
+ * @param {string} reopenTransition - Transition name to reopen issues (default: 'Reopened')
+ * @returns {Promise<Object>} Update result with { updated: false, reopened, dryRun }
  */
 async function updateJiraIssue(
   jiraClient,
   issueKey,
   alert,
   dryRun = false,
-  customComment = null
+  reopenTransition = 'Reopened'
 ) {
-  // First, fetch the existing issue to check if it needs updating
-  // Only skip the comparison check if a custom comment is provided (manual update)
+  let reopened = false;
+
+  // Fetch the existing issue to check if it's closed
   // Item 12: Fetch issue even in dry run mode for accurate simulation
-  if (!customComment) {
-    try {
-      const issueResponse = await jiraClient.get(`/issue/${issueKey}`, {
-        params: {
-          fields: 'updated,comment'
-        }
-      });
-
-      const issueUpdatedAt = new Date(issueResponse.data.fields.updated);
-      const alertUpdatedAt = new Date(alert.updatedAt);
-
-      // If the alert hasn't been updated since the Jira issue was last updated,
-      // skip adding a redundant comment
-      if (alertUpdatedAt <= issueUpdatedAt) {
-        const logPrefix = dryRun ? '[DRY RUN] ' : '';
-        info(
-          `${logPrefix}Alert #${alert.id} hasn't changed since last Jira update (${alertUpdatedAt.toISOString()} <= ${issueUpdatedAt.toISOString()}), skipping comment`
-        );
-        return { updated: false, skipped: true, reason: 'no_changes', dryRun }
-      }
-
-      const logPrefix = dryRun ? '[DRY RUN] ' : '';
-      info(
-        `${logPrefix}Alert #${alert.id} has been updated (${alertUpdatedAt.toISOString()} > ${issueUpdatedAt.toISOString()}), ${dryRun ? 'would add' : 'adding'} comment`
-      );
-    } catch (error) {
-      warning(
-        `Could not fetch issue ${issueKey} for comparison, proceeding with update: ${error.message}`
-      );
-      // Continue with update if we can't fetch for comparison
-    }
-  }
-
-  // If a custom comment is provided, use it (convert plain text to ADF if needed)
-  // Otherwise, build the default alert-based comment
-  const comment = customComment
-    ? {
-        type: 'doc',
-        version: 1,
-        content: [
-          {
-            type: 'paragraph',
-            content: [
-              {
-                type: 'text',
-                text: customComment
-              }
-            ]
-          }
-        ]
-      }
-    : {
-        type: 'doc',
-        version: 1,
-        content: [
-          {
-            type: 'heading',
-            attrs: {
-              level: 3
-            },
-            content: [
-              {
-                type: 'text',
-                text: 'Dependabot Alert Updated'
-              }
-            ]
-          },
-          {
-            type: 'paragraph',
-            content: []
-          },
-          {
-            type: 'paragraph',
-            content: [
-              {
-                type: 'text',
-                text: `The Dependabot alert #${alert.id} has been updated.`
-              }
-            ]
-          },
-          {
-            type: 'paragraph',
-            content: []
-          },
-          {
-            type: 'paragraph',
-            content: [
-              {
-                type: 'text',
-                text: 'Current Status: ',
-                marks: [{ type: 'strong' }]
-              },
-              {
-                type: 'text',
-                text: alert.state
-              }
-            ]
-          },
-          {
-            type: 'paragraph',
-            content: [
-              {
-                type: 'text',
-                text: 'Last Updated: ',
-                marks: [{ type: 'strong' }]
-              },
-              {
-                type: 'text',
-                text: new Date(alert.updatedAt).toLocaleString()
-              }
-            ]
-          },
-          ...(alert.dismissedAt
-            ? [
-                {
-                  type: 'paragraph',
-                  content: []
-                },
-                {
-                  type: 'paragraph',
-                  content: [
-                    {
-                      type: 'text',
-                      text: 'Dismissed At: ',
-                      marks: [{ type: 'strong' }]
-                    },
-                    {
-                      type: 'text',
-                      text: new Date(alert.dismissedAt).toLocaleString()
-                    }
-                  ]
-                }
-              ]
-            : []),
-          ...(alert.dismissedReason
-            ? [
-                {
-                  type: 'paragraph',
-                  content: []
-                },
-                {
-                  type: 'paragraph',
-                  content: [
-                    {
-                      type: 'text',
-                      text: 'Dismissed Reason: ',
-                      marks: [{ type: 'strong' }]
-                    },
-                    {
-                      type: 'text',
-                      text: alert.dismissedReason
-                    }
-                  ]
-                }
-              ]
-            : []),
-          ...(alert.dismissedComment
-            ? [
-                {
-                  type: 'paragraph',
-                  content: []
-                },
-                {
-                  type: 'paragraph',
-                  content: [
-                    {
-                      type: 'text',
-                      text: 'Dismissed Comment: ',
-                      marks: [{ type: 'strong' }]
-                    },
-                    {
-                      type: 'text',
-                      text: alert.dismissedComment
-                    }
-                  ]
-                }
-              ]
-            : []),
-          {
-            type: 'paragraph',
-            content: []
-          },
-          {
-            type: 'paragraph',
-            content: [
-              {
-                type: 'text',
-                text: 'GitHub Alert URL: ',
-                marks: [{ type: 'strong' }]
-              },
-              {
-                type: 'text',
-                text: alert.url,
-                marks: [
-                  {
-                    type: 'link',
-                    attrs: {
-                      href: alert.url
-                    }
-                  }
-                ]
-              }
-            ]
-          }
-        ]
-      };
-
-  if (dryRun) {
-    info(`[DRY RUN] Would update Jira issue ${issueKey} with comment`);
-    return { updated: true, dryRun: true }
-  }
-
   try {
-    await jiraClient.post(`/issue/${issueKey}/comment`, {
-      body: comment
+    const issueResponse = await jiraClient.get(`/issue/${issueKey}`, {
+      params: {
+        fields: 'status'
+      }
     });
 
-    info(`Updated Jira issue: ${issueKey}`);
-    return { updated: true }
-  } catch (error$1) {
-    error(`Failed to update Jira issue ${issueKey}: ${error$1.message}`);
-    throw error$1
+    // Check if the issue is closed and needs to be reopened
+    const issueStatus = issueResponse.data.fields.status?.name || '';
+    const isClosed =
+      issueStatus.toLowerCase().includes('done') ||
+      issueStatus.toLowerCase().includes('closed') ||
+      issueStatus.toLowerCase().includes('resolved');
+
+    if (isClosed) {
+      info(
+        `Issue ${issueKey} is in closed state (${issueStatus}). ${dryRun ? 'Would reopen' : 'Reopening'}.`
+      );
+
+      const reopenResult = await reopenJiraIssue(
+        jiraClient,
+        issueKey,
+        reopenTransition,
+        `Reopening because the Dependabot alert is still open: ${alert.url}`,
+        dryRun
+      );
+
+      reopened = reopenResult.reopened || false;
+    }
+  } catch (error) {
+    warning(
+      `Could not fetch issue ${issueKey} to check status: ${error.message}`
+    );
+    // Continue without reopening if we can't fetch
   }
+
+  // updateJiraIssue no longer adds comments - it only checks/reopens closed issues
+  debug(`Checked issue ${issueKey} - reopened: ${reopened}`);
+
+  return { updated: false, reopened, dryRun }
 }
 
 /**
@@ -72599,7 +72419,7 @@ async function appendAlertUrlToIssue(
  * Reopen a closed Jira issue by transitioning it to an open state
  * @param {Object} jiraClient - Axios instance for Jira API
  * @param {string} issueKey - Jira issue key
- * @param {string} reopenTransition - Transition name to reopen (e.g., "Reopen", "To Do")
+ * @param {string} reopenTransition - Transition name to reopen (e.g., "Reopened", "To Do")
  * @param {string} comment - Comment to add when reopening
  * @param {boolean} dryRun - Whether this is a dry run
  * @returns {Promise<Object>} Result of the operation
@@ -72861,12 +72681,17 @@ async function run() {
               jiraClient,
               existingIssue.key,
               parsedAlert,
-              config.behavior.dryRun
+              config.behavior.dryRun,
+              config.behavior.reopenTransition
             );
 
             // Only increment counter if we actually updated (not skipped due to no changes)
             if (updateResult.updated) {
               issuesUpdated++;
+            }
+
+            if (updateResult.reopened) {
+              issuesReopened++;
             }
           } else {
             info(
@@ -72904,34 +72729,17 @@ async function run() {
               alertsGroupedByGhsa++;
             }
 
-            // Check if the issue is closed and needs to be reopened
-            const issueStatus = ghsaIssue.fields?.status?.name || '';
-            const closeTransition =
-              config.behavior.closeTransition.toLowerCase();
+            // Update the issue and reopen if closed
+            const updateResult = await updateJiraIssue(
+              jiraClient,
+              ghsaIssue.key,
+              parsedAlert,
+              config.behavior.dryRun,
+              config.behavior.reopenTransition
+            );
 
-            // Check if status name contains or matches close transition
-            const isClosed =
-              issueStatus.toLowerCase().includes(closeTransition) ||
-              issueStatus.toLowerCase().includes('done') ||
-              issueStatus.toLowerCase().includes('closed') ||
-              issueStatus.toLowerCase().includes('resolved');
-
-            if (isClosed) {
-              info(
-                `Issue ${ghsaIssue.key} is in closed state (${issueStatus}). Reopening.`
-              );
-
-              const reopenResult = await reopenJiraIssue(
-                jiraClient,
-                ghsaIssue.key,
-                config.behavior.reopenTransition,
-                `Reopening because a new Dependabot alert was found for this GHSA: ${parsedAlert.url}`,
-                config.behavior.dryRun
-              );
-
-              if (reopenResult.reopened) {
-                issuesReopened++;
-              }
+            if (updateResult.reopened) {
+              issuesReopened++;
             }
           } else {
             // No existing issue for this GHSA - create new issue

@@ -213,7 +213,8 @@ describe('Dependabot Jira Sync', () => {
       expect.any(Object), // jiraClient
       'TEST-456',
       parsedAlert,
-      false // dryRun
+      false, // dryRun
+      'Reopen' // reopenTransition
     )
 
     expect(mockCore.setOutput).toHaveBeenCalledWith('issues-created', '0')
@@ -462,6 +463,58 @@ describe('Dependabot Jira Sync', () => {
       false
     )
     expect(mockCore.setOutput).toHaveBeenCalledWith('issues-closed', '1')
+  })
+
+  it('should reopen closed issue when URL match finds a closed Jira issue', async () => {
+    const mockAlert = {
+      number: 1,
+      security_advisory: {
+        summary: 'Test vulnerability',
+        severity: 'medium'
+      },
+      dependency: {
+        package: { name: 'test-package' }
+      },
+      html_url: 'https://github.com/test/alert/1',
+      state: 'open'
+    }
+
+    const parsedAlert = {
+      id: 1,
+      title: 'Test vulnerability',
+      severity: 'medium',
+      url: 'https://github.com/test/alert/1'
+    }
+
+    const existingClosedIssue = {
+      key: 'TEST-456',
+      fields: {
+        status: { name: 'Done' } // Issue is CLOSED
+      }
+    }
+
+    mockGithub.getDependabotAlerts.mockResolvedValue([mockAlert])
+    mockGithub.parseAlert.mockReturnValue(parsedAlert)
+    // Mock existing issue found by URL, but it's closed
+    mockJira.findDependabotIssues.mockResolvedValue([existingClosedIssue])
+    mockJira.extractAlertUrlFromIssue.mockReturnValue(
+      'https://github.com/test/alert/1'
+    )
+    mockJira.updateJiraIssue.mockResolvedValue({ updated: true, reopened: true })
+
+    await run()
+
+    // Should reopen because the matched issue is closed but alert is still open
+    // updateJiraIssue now handles reopening internally, so check it was called
+    expect(mockJira.updateJiraIssue).toHaveBeenCalledWith(
+      expect.any(Object),
+      'TEST-456',
+      parsedAlert,
+      false,
+      'Reopen'
+    )
+    expect(mockCore.setOutput).toHaveBeenCalledWith('issues-reopened', '1')
+    expect(mockCore.setOutput).toHaveBeenCalledWith('issues-updated', '1')
   })
 
   it('should reopen closed issue when alerts from current repo are still open', async () => {

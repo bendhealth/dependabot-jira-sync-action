@@ -204,12 +204,17 @@ export async function run() {
               jiraClient,
               existingIssue.key,
               parsedAlert,
-              config.behavior.dryRun
+              config.behavior.dryRun,
+              config.behavior.reopenTransition
             )
 
             // Only increment counter if we actually updated (not skipped due to no changes)
             if (updateResult.updated) {
               issuesUpdated++
+            }
+
+            if (updateResult.reopened) {
+              issuesReopened++
             }
           } else {
             core.info(
@@ -247,34 +252,17 @@ export async function run() {
               alertsGroupedByGhsa++
             }
 
-            // Check if the issue is closed and needs to be reopened
-            const issueStatus = ghsaIssue.fields?.status?.name || ''
-            const closeTransition =
-              config.behavior.closeTransition.toLowerCase()
+            // Update the issue and reopen if closed
+            const updateResult = await updateJiraIssue(
+              jiraClient,
+              ghsaIssue.key,
+              parsedAlert,
+              config.behavior.dryRun,
+              config.behavior.reopenTransition
+            )
 
-            // Check if status name contains or matches close transition
-            const isClosed =
-              issueStatus.toLowerCase().includes(closeTransition) ||
-              issueStatus.toLowerCase().includes('done') ||
-              issueStatus.toLowerCase().includes('closed') ||
-              issueStatus.toLowerCase().includes('resolved')
-
-            if (isClosed) {
-              core.info(
-                `Issue ${ghsaIssue.key} is in closed state (${issueStatus}). Reopening.`
-              )
-
-              const reopenResult = await reopenJiraIssue(
-                jiraClient,
-                ghsaIssue.key,
-                config.behavior.reopenTransition,
-                `Reopening because a new Dependabot alert was found for this GHSA: ${parsedAlert.url}`,
-                config.behavior.dryRun
-              )
-
-              if (reopenResult.reopened) {
-                issuesReopened++
-              }
+            if (updateResult.reopened) {
+              issuesReopened++
             }
           } else {
             // No existing issue for this GHSA - create new issue
