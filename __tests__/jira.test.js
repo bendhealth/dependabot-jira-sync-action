@@ -539,24 +539,21 @@ describe('Jira API Functions', () => {
       )
     })
 
-    it('should handle dry run mode', async () => {
-      mockAxiosInstance.get.mockResolvedValue({
-        data: {
-          fields: {
-            status: { name: 'Open' }
-          }
-        }
-      })
-
+    it('should handle dry run mode without making API calls', async () => {
       const result = await updateJiraIssue(
         mockAxiosInstance,
-        'SEC-123',
+        'DRY-RUN-KEY', // Use the dry run key that doesn't exist in Jira
         mockAlert,
         true
       )
 
+      // Should NOT make any API calls in dry run mode
+      expect(mockAxiosInstance.get).not.toHaveBeenCalled()
       expect(mockAxiosInstance.post).not.toHaveBeenCalled()
       expect(result).toEqual({ updated: false, reopened: false, dryRun: true })
+      expect(mockCore.info).toHaveBeenCalledWith(
+        '[DRY RUN] Would check if issue DRY-RUN-KEY needs reopening'
+      )
     })
   })
 

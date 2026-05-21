@@ -604,10 +604,15 @@ export async function updateJiraIssue(
   dryRun = false,
   reopenTransition = 'Reopened'
 ) {
+  // In dry run mode, skip API calls (issue key might be "DRY-RUN-KEY")
+  if (dryRun) {
+    core.info(`[DRY RUN] Would check if issue ${issueKey} needs reopening`)
+    return { updated: false, reopened: false, dryRun: true }
+  }
+
   let reopened = false
 
   // Fetch the existing issue to check if it's closed
-  // Item 12: Fetch issue even in dry run mode for accurate simulation
   try {
     const issueResponse = await jiraClient.get(`/issue/${issueKey}`, {
       params: {
