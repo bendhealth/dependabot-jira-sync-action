@@ -459,7 +459,8 @@ describe('Jira API Functions', () => {
       mockAxiosInstance.get.mockResolvedValue({
         data: {
           fields: {
-            status: { name: 'Open' }
+            status: { name: 'Open' },
+            resolution: null // Open issue has no resolution
           }
         }
       })
@@ -471,10 +472,10 @@ describe('Jira API Functions', () => {
         false
       )
 
-      // Should fetch the issue to check status
+      // Should fetch the issue to check status and resolution
       expect(mockAxiosInstance.get).toHaveBeenCalledWith('/issue/SEC-123', {
         params: {
-          fields: 'status'
+          fields: 'status,resolution'
         }
       })
 
@@ -485,11 +486,12 @@ describe('Jira API Functions', () => {
     })
 
     it('should reopen closed issue', async () => {
-      // Mock the issue GET to return closed status
+      // Mock the issue GET to return closed status (with resolution set)
       mockAxiosInstance.get.mockResolvedValueOnce({
         data: {
           fields: {
-            status: { name: 'Done' }
+            status: { name: 'Done' },
+            resolution: { name: 'Done' } // Closed issue has resolution set
           }
         }
       })
@@ -618,7 +620,7 @@ describe('Jira API Functions', () => {
       expect(mockAxiosInstance.get).toHaveBeenCalledWith('/search/jql', {
         params: {
           jql: 'project = "SEC" AND labels = "dependabot" AND resolution IS EMPTY',
-          fields: 'key,summary,description,status',
+          fields: 'key,summary,description,status,resolution',
           startAt: 0,
           maxResults: 100
         }
@@ -672,7 +674,7 @@ describe('Jira API Functions', () => {
       expect(mockAxiosInstance.get).toHaveBeenCalledWith('/search/jql', {
         params: {
           jql: 'project = "SEC" AND labels = "dependabot"',
-          fields: 'key,summary,description,status',
+          fields: 'key,summary,description,status,resolution',
           startAt: 0,
           maxResults: 100
         }
@@ -716,7 +718,7 @@ describe('Jira API Functions', () => {
       expect(mockAxiosInstance.get).toHaveBeenCalledWith('/search/jql', {
         params: {
           jql: 'project = "SEC" AND labels = "dependabot" AND labels = "security" AND labels = "automated" AND resolution IS EMPTY',
-          fields: 'key,summary,description,status',
+          fields: 'key,summary,description,status,resolution',
           startAt: 0,
           maxResults: 100
         }
@@ -739,7 +741,7 @@ describe('Jira API Functions', () => {
       expect(mockAxiosInstance.get).toHaveBeenCalledWith('/search/jql', {
         params: {
           jql: 'project = "SEC" AND labels = "dependabot" AND labels = "security" AND resolution IS EMPTY',
-          fields: 'key,summary,description,status',
+          fields: 'key,summary,description,status,resolution',
           startAt: 0,
           maxResults: 100
         }
@@ -754,7 +756,7 @@ describe('Jira API Functions', () => {
       expect(mockAxiosInstance.get).toHaveBeenCalledWith('/search/jql', {
         params: {
           jql: 'project = "SEC" AND resolution IS EMPTY',
-          fields: 'key,summary,description,status',
+          fields: 'key,summary,description,status,resolution',
           startAt: 0,
           maxResults: 100
         }
@@ -880,7 +882,7 @@ describe('Jira API Functions', () => {
       expect(mockAxiosInstance.get).toHaveBeenCalledWith('/search/jql', {
         params: {
           jql: 'project = "SEC" AND labels = "dependabot" AND resolution IS EMPTY',
-          fields: 'key,summary,description,status',
+          fields: 'key,summary,description,status,resolution',
           startAt: 0,
           maxResults: 100
         }

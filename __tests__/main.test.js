@@ -332,7 +332,8 @@ describe('Dependabot Jira Sync', () => {
         {
           key: 'TEST-1',
           fields: {
-            status: { name: 'To Do' }
+            status: { name: 'To Do' },
+            resolution: null // Open issue has no resolution
           }
         }
       ])
@@ -382,7 +383,8 @@ describe('Dependabot Jira Sync', () => {
         {
           key: 'TEST-1',
           fields: {
-            status: { name: 'To Do' }
+            status: { name: 'To Do' },
+            resolution: null // Open issue has no resolution
           }
         }
       ])
@@ -432,7 +434,8 @@ describe('Dependabot Jira Sync', () => {
         {
           key: 'TEST-1',
           fields: {
-            status: { name: 'To Do' }
+            status: { name: 'To Do' },
+            resolution: null // Open issue has no resolution
           }
         }
       ])
@@ -489,7 +492,8 @@ describe('Dependabot Jira Sync', () => {
     const existingClosedIssue = {
       key: 'TEST-456',
       fields: {
-        status: { name: 'Done' } // Issue is CLOSED
+        status: { name: 'Done' }, // Issue is CLOSED
+        resolution: { name: 'Done' } // Resolution is set = closed
       }
     }
 
@@ -544,7 +548,8 @@ describe('Dependabot Jira Sync', () => {
         {
           key: 'TEST-1',
           fields: {
-            status: { name: 'Done' } // Issue is CLOSED
+            status: { name: 'Done' }, // Issue is CLOSED
+            resolution: { name: 'Done' } // Resolution is set = closed
           }
         }
       ])

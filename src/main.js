@@ -384,14 +384,9 @@ export async function run() {
             const anyOpen = alertStatuses.some((a) => a.status === 'open')
 
             // Check if issue is currently closed
-            const issueStatus = issue.fields?.status?.name || ''
-            const closeTransition =
-              config.behavior.closeTransition.toLowerCase()
-            const isClosed =
-              issueStatus.toLowerCase().includes(closeTransition) ||
-              issueStatus.toLowerCase().includes('done') ||
-              issueStatus.toLowerCase().includes('closed') ||
-              issueStatus.toLowerCase().includes('resolved')
+            // In Jira, if resolution is not null/empty, the issue is closed/resolved
+            // This works across all Jira workflows regardless of status names
+            const isClosed = issue.fields?.resolution != null
 
             // Determine action based on issue state and alert statuses
             if (allResolved && !isClosed) {
