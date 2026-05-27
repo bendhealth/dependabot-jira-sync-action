@@ -20,7 +20,7 @@ import { jest } from '@jest/globals'
 import {
   createJiraClient,
   findDependabotIssues,
-  extractAlertUrlFromIssue,
+  extractAllAlertUrlsFromIssue,
   extractAlertIdFromUrl,
   createJiraIssue,
   updateJiraIssue,
@@ -103,10 +103,13 @@ maybeDescribe('Jira integration (live)', () => {
         false // Get all issues
       )
       issue = issues.find((iss) => {
-        const url = extractAlertUrlFromIssue(iss)
-        if (!url) return false
-        const id = extractAlertIdFromUrl(url)
-        return id === alert.id.toString()
+        const urls = extractAllAlertUrlsFromIssue(iss)
+        if (urls.length === 0) return false
+        // Check if any URL matches our alert ID
+        return urls.some((url) => {
+          const id = extractAlertIdFromUrl(url)
+          return id === alert.id.toString()
+        })
       })
       if (issue) break
     }

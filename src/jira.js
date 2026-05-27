@@ -784,43 +784,6 @@ export async function findDependabotIssues(
 }
 
 /**
- * Extract GitHub alert URL from Jira issue description
- * @param {Object} issue - Jira issue object
- * @returns {string|null} GitHub alert URL or null if not found
- */
-export function extractAlertUrlFromIssue(issue) {
-  // Debug: Log the issue structure
-  core.debug(
-    `Debug: Issue ${issue.key} structure: ${JSON.stringify(issue, null, 2)}`
-  )
-
-  // Jira API often nests fields under 'fields' object
-  const description = issue.description || issue.fields?.description
-
-  if (!description) {
-    core.warning(`Could not extract GitHub alert URL from issue ${issue.key}`)
-    return null
-  }
-
-  // Extract the GitHub alert URL from the description (ADF format)
-  // Pattern: https://github.com/{owner}/{repo}/security/dependabot/{number}
-  const descriptionStr = JSON.stringify(description)
-  const urlMatch = descriptionStr.match(
-    /https:\/\/github\.com\/[^/]+\/[^/]+\/security\/dependabot\/\d+/
-  )
-
-  if (urlMatch) {
-    core.debug(
-      `Extracted alert URL ${urlMatch[0]} from description of ${issue.key}`
-    )
-    return urlMatch[0]
-  }
-
-  core.warning(`Could not extract GitHub alert URL from issue ${issue.key}`)
-  return null
-}
-
-/**
  * Extract ALL GitHub alert URLs from Jira issue description
  * @param {Object} issue - Jira issue object
  * @returns {string[]} Array of GitHub alert URLs (may be empty)

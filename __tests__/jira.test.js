@@ -43,7 +43,6 @@ const {
   createJiraIssue,
   updateJiraIssue,
   findDependabotIssues,
-  extractAlertUrlFromIssue,
   extractAllAlertUrlsFromIssue,
   extractAlertIdFromUrl,
   extractGhsaIdFromIssue,
@@ -897,117 +896,7 @@ describe('Jira API Functions', () => {
     })
   })
 
-  describe('extractAlertUrlFromIssue', () => {
-    it('should extract GitHub alert URL from description', () => {
-      const issue = {
-        key: 'SEC-123',
-        summary: 'Dependabot Alert #42: Critical vulnerability in lodash',
-        description: {
-          type: 'doc',
-          version: 1,
-          content: [
-            {
-              type: 'paragraph',
-              content: [
-                {
-                  type: 'text',
-                  text: 'GitHub Alert URL: ',
-                  marks: [{ type: 'strong' }]
-                },
-                {
-                  type: 'text',
-                  text: 'https://github.com/owner/repo/security/dependabot/42',
-                  marks: [
-                    {
-                      type: 'link',
-                      attrs: {
-                        href: 'https://github.com/owner/repo/security/dependabot/42'
-                      }
-                    }
-                  ]
-                }
-              ]
-            }
-          ]
-        }
-      }
 
-      const result = extractAlertUrlFromIssue(issue)
-
-      expect(result).toBe(
-        'https://github.com/owner/repo/security/dependabot/42'
-      )
-    })
-
-    it('should handle different URL formats', () => {
-      const issue = {
-        key: 'SEC-456',
-        description: {
-          type: 'doc',
-          version: 1,
-          content: [
-            {
-              type: 'paragraph',
-              content: [
-                {
-                  type: 'text',
-                  text: 'https://github.com/my-org/my-repo/security/dependabot/999'
-                }
-              ]
-            }
-          ]
-        }
-      }
-
-      const result = extractAlertUrlFromIssue(issue)
-
-      expect(result).toBe(
-        'https://github.com/my-org/my-repo/security/dependabot/999'
-      )
-    })
-
-    it('should return null when no URL found', () => {
-      const issue = {
-        key: 'SEC-123',
-        summary: 'Manual security issue',
-        description: {
-          type: 'doc',
-          version: 1,
-          content: [
-            {
-              type: 'paragraph',
-              content: [
-                {
-                  type: 'text',
-                  text: 'This is not a Dependabot alert'
-                }
-              ]
-            }
-          ]
-        }
-      }
-
-      const result = extractAlertUrlFromIssue(issue)
-
-      expect(result).toBeNull()
-      expect(mockCore.warning).toHaveBeenCalledWith(
-        'Could not extract GitHub alert URL from issue SEC-123'
-      )
-    })
-
-    it('should handle missing description', () => {
-      const issue = {
-        key: 'SEC-123'
-      }
-
-      const result = extractAlertUrlFromIssue(issue)
-
-      expect(result).toBeNull()
-      expect(mockCore.warning).toHaveBeenCalledWith(
-        'Could not extract GitHub alert URL from issue SEC-123'
-      )
-    })
-  })
 
   describe('extractAllAlertUrlsFromIssue', () => {
     it('should extract all GitHub alert URLs from description', () => {

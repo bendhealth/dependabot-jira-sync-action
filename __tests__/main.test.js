@@ -27,7 +27,6 @@ const mockJira = {
   createJiraIssue: jest.fn(),
   updateJiraIssue: jest.fn(),
   findDependabotIssues: jest.fn(),
-  extractAlertUrlFromIssue: jest.fn(),
   extractAllAlertUrlsFromIssue: jest.fn(),
   extractGhsaIdFromIssue: jest.fn(),
   extractAlertIdFromUrl: jest.fn(),
@@ -96,7 +95,7 @@ describe('Dependabot Jira Sync', () => {
     })
 
     mockJira.findDependabotIssues.mockResolvedValue([]) // No existing issues by default
-    mockJira.extractAlertUrlFromIssue.mockReturnValue(null)
+    mockJira.extractAllAlertUrlsFromIssue.mockReturnValue([]) // No URLs by default
     mockJira.extractGhsaIdFromIssue.mockReturnValue(null) // No GHSA by default
     mockJira.extractAlertIdFromUrl.mockReturnValue(null)
     mockJira.appendAlertUrlToIssue.mockResolvedValue({ updated: true })
@@ -203,9 +202,9 @@ describe('Dependabot Jira Sync', () => {
     mockGithub.parseAlert.mockReturnValue(parsedAlert)
     // Mock existing issue found by URL
     mockJira.findDependabotIssues.mockResolvedValue([existingIssue])
-    mockJira.extractAlertUrlFromIssue.mockReturnValue(
+    mockJira.extractAllAlertUrlsFromIssue.mockReturnValue([
       'https://github.com/test/alert/1'
-    )
+    ])
 
     await run()
 
@@ -501,9 +500,9 @@ describe('Dependabot Jira Sync', () => {
     mockGithub.parseAlert.mockReturnValue(parsedAlert)
     // Mock existing issue found by URL, but it's closed
     mockJira.findDependabotIssues.mockResolvedValue([existingClosedIssue])
-    mockJira.extractAlertUrlFromIssue.mockReturnValue(
+    mockJira.extractAllAlertUrlsFromIssue.mockReturnValue([
       'https://github.com/test/alert/1'
-    )
+    ])
     mockJira.updateJiraIssue.mockResolvedValue({
       updated: true,
       reopened: true
@@ -719,9 +718,9 @@ describe('Dependabot Jira Sync', () => {
     }
 
     mockJira.findDependabotIssues.mockResolvedValue([existingIssue])
-    mockJira.extractAlertUrlFromIssue.mockReturnValue(
+    mockJira.extractAllAlertUrlsFromIssue.mockReturnValue([
       'https://github.com/test-owner/test-repo/security/dependabot/1'
-    )
+    ])
     mockJira.extractGhsaIdFromIssue.mockReturnValue('GHSA-aaaa-bbbb-cccc')
     mockJira.appendAlertUrlToIssue.mockResolvedValue({ updated: true })
 
@@ -743,6 +742,70 @@ describe('Dependabot Jira Sync', () => {
       'alerts-grouped-by-ghsa',
       '1'
     )
+  })
+
+  it('should map all URLs from an issue with multiple alerts', async () => {
+    const alert1 = { number: 1, state: 'open' }
+    const alert2 = { number: 2, state: 'open' }
+    const parsedAlert1 = {
+      id: 1,
+      severity: 'high',
+      url: 'https://github.com/test-owner/test-repo/security/dependabot/1',
+      ghsaId: 'GHSA-xxxx-yyyy-zzzz'
+    }
+    const parsedAlert2 = {
+      id: 2,
+      severity: 'high',
+      url: 'https://github.com/test-owner/test-repo/security/dependabot/2',
+      ghsaId: 'GHSA-xxxx-yyyy-zzzz'
+    }
+
+    // Existing issue already has both alert URLs
+    const existingIssue = {
+      key: 'TEST-200',
+      fields: {
+        description: {
+          type: 'doc',
+          content: []
+        }
+      }
+    }
+
+    mockGithub.getDependabotAlerts.mockResolvedValue([alert1, alert2])
+    mockGithub.parseAlert
+      .mockReturnValueOnce(parsedAlert1)
+      .mockReturnValueOnce(parsedAlert2)
+    mockJira.findDependabotIssues.mockResolvedValue([existingIssue])
+    // Mock extractAllAlertUrlsFromIssue to return multiple URLs
+    mockJira.extractAllAlertUrlsFromIssue.mockReturnValue([
+      'https://github.com/test-owner/test-repo/security/dependabot/1',
+      'https://github.com/test-owner/test-repo/security/dependabot/2'
+    ])
+    mockJira.extractGhsaIdFromIssue.mockReturnValue('GHSA-xxxx-yyyy-zzzz')
+
+    await run()
+
+    // Should NOT create any new issues
+    expect(mockJira.createJiraIssue).not.toHaveBeenCalled()
+
+    // Should update the existing issue for both alerts (found by URL)
+    expect(mockJira.updateJiraIssue).toHaveBeenCalledTimes(2)
+    expect(mockJira.updateJiraIssue).toHaveBeenCalledWith(
+      expect.any(Object),
+      'TEST-200',
+      parsedAlert1,
+      false,
+      'Reopen'
+    )
+    expect(mockJira.updateJiraIssue).toHaveBeenCalledWith(
+      expect.any(Object),
+      'TEST-200',
+      parsedAlert2,
+      false,
+      'Reopen'
+    )
+
+    expect(mockCore.setOutput).toHaveBeenCalledWith('issues-created', '0')
   })
 
   it('validates config inputs and fails fast on invalid values', async () => {

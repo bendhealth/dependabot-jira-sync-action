@@ -10,7 +10,6 @@ import {
   createJiraIssue,
   updateJiraIssue,
   findDependabotIssues,
-  extractAlertUrlFromIssue,
   extractAllAlertUrlsFromIssue,
   extractGhsaIdFromIssue,
   extractAlertIdFromUrl,
@@ -159,8 +158,9 @@ export async function run() {
     const ghsaMap = new Map()
 
     for (const issue of existingIssues) {
-      const alertUrl = extractAlertUrlFromIssue(issue)
-      if (alertUrl) {
+      // Extract ALL alert URLs from the issue and map each one
+      const alertUrls = extractAllAlertUrlsFromIssue(issue)
+      for (const alertUrl of alertUrls) {
         issueMap.set(alertUrl, issue)
         core.debug(`Mapped alert URL ${alertUrl} to Jira issue ${issue.key}`)
       }
