@@ -896,8 +896,6 @@ describe('Jira API Functions', () => {
     })
   })
 
-
-
   describe('extractAllAlertUrlsFromIssue', () => {
     it('should extract all GitHub alert URLs from description', () => {
       const issue = {
