@@ -13,12 +13,16 @@ const mockCore = {
 }
 
 // Mock @actions/github
+const mockPaginateIterator = jest.fn()
 const mockOctokit = {
   rest: {
     dependabot: {
       listAlertsForRepo: jest.fn(),
       getAlert: jest.fn()
     }
+  },
+  paginate: {
+    iterator: mockPaginateIterator
   }
 }
 
@@ -36,8 +40,142 @@ jest.unstable_mockModule('jsonwebtoken', () => ({
 }))
 
 // Import the functions we want to test
-const { getRepoInfo, getDependabotAlerts, parseAlert, getAlertStatus } =
-  await import('../src/github.js')
+const {
+  getRepoInfo,
+  getDependabotAlerts,
+  parseAlert,
+  getAlertStatus,
+  getGitHubToken
+} = await import('../src/github.js')
+
+describe('getGitHubToken', () => {
+  it('should use GitHub App authentication when all credentials provided', async () => {
+    mockCore.getInput.mockImplementation((name) => {
+      const inputs = {
+        'github-app-id': '12345',
+        'github-app-private-key':
+          'LS0tLS1CRUdJTiBSU0EgUFJJVkFURSBLRVktLS0tLQ==', // Base64 encoded
+        'github-app-installation-id': '67890',
+        'github-token': ''
+      }
+      return inputs[name] || ''
+    })
+
+    // Mock the apps API
+    mockOctokit.rest.apps = {
+      createInstallationAccessToken: jest
+        .fn()
+        .mockResolvedValue({ data: { token: 'ghs_installation_token' } })
+    }
+
+    const token = await getGitHubToken()
+
+    expect(token).toBe('ghs_installation_token')
+    expect(mockCore.info).toHaveBeenCalledWith(
+      '🔑 Using GitHub App authentication'
+    )
+    expect(
+      mockOctokit.rest.apps.createInstallationAccessToken
+    ).toHaveBeenCalledWith({
+      installation_id: 67890
+    })
+  })
+
+  it('should handle PEM format private keys', async () => {
+    const pemKey = `-----BEGIN RSA PRIVATE KEY-----
+MIIEpAIBAAKCAQEA...
+-----END RSA PRIVATE KEY-----`
+
+    mockCore.getInput.mockImplementation((name) => {
+      const inputs = {
+        'github-app-id': '12345',
+        'github-app-private-key': pemKey,
+        'github-app-installation-id': '67890',
+        'github-token': ''
+      }
+      return inputs[name] || ''
+    })
+
+    mockOctokit.rest.apps = {
+      createInstallationAccessToken: jest
+        .fn()
+        .mockResolvedValue({ data: { token: 'ghs_installation_token' } })
+    }
+
+    const token = await getGitHubToken()
+
+    expect(token).toBe('ghs_installation_token')
+  })
+
+  it('should fall back to PAT when GitHub App credentials incomplete', async () => {
+    mockCore.getInput.mockImplementation((name) => {
+      const inputs = {
+        'github-app-id': '12345',
+        'github-app-private-key': '', // Missing private key
+        'github-app-installation-id': '67890',
+        'github-token': 'ghp_personal_access_token'
+      }
+      return inputs[name] || ''
+    })
+
+    const token = await getGitHubToken()
+
+    expect(token).toBe('ghp_personal_access_token')
+    expect(mockCore.info).toHaveBeenCalledWith(
+      '🔑 Using GitHub token authentication'
+    )
+  })
+
+  it('should use PAT when only token provided', async () => {
+    mockCore.getInput.mockImplementation((name) => {
+      const inputs = {
+        'github-app-id': '',
+        'github-app-private-key': '',
+        'github-app-installation-id': '',
+        'github-token': 'ghp_token_12345'
+      }
+      return inputs[name] || ''
+    })
+
+    const token = await getGitHubToken()
+
+    expect(token).toBe('ghp_token_12345')
+    expect(mockCore.info).toHaveBeenCalledWith(
+      '🔑 Using GitHub token authentication'
+    )
+  })
+
+  it('should throw error when no authentication method provided', async () => {
+    mockCore.getInput.mockImplementation(() => '')
+
+    await expect(getGitHubToken()).rejects.toThrow(
+      /No authentication method provided/
+    )
+  })
+
+  it('should handle GitHub App installation token errors', async () => {
+    mockCore.getInput.mockImplementation((name) => {
+      const inputs = {
+        'github-app-id': '12345',
+        'github-app-private-key':
+          'LS0tLS1CRUdJTiBSU0EgUFJJVkFURSBLRVktLS0tLQ==',
+        'github-app-installation-id': '67890',
+        'github-token': ''
+      }
+      return inputs[name] || ''
+    })
+
+    mockOctokit.rest.apps = {
+      createInstallationAccessToken: jest
+        .fn()
+        .mockRejectedValue(new Error('Invalid installation'))
+    }
+
+    await expect(getGitHubToken()).rejects.toThrow(
+      /Failed to get installation token/
+    )
+  })
+})
 
 describe('GitHub API Functions', () => {
   beforeEach(() => {
@@ -93,10 +231,12 @@ describe('GitHub API Functions', () => {
     ]
 
     beforeEach(() => {
-      // Default to open alerts
-      mockOctokit.rest.dependabot.listAlertsForRepo.mockResolvedValue({
-        data: mockAlertsOpen
-      })
+      // Mock paginate.iterator to return single page by default
+      mockPaginateIterator.mockReturnValue(
+        (async function* () {
+          yield { data: mockAlertsOpen }
+        })()
+      )
 
       // Mock token authentication (default)
       mockCore.getInput.mockImplementation((name) => {
@@ -112,14 +252,15 @@ describe('GitHub API Functions', () => {
       })
 
       expect(mockGetOctokit).toHaveBeenCalledWith('mock-token')
-      expect(
-        mockOctokit.rest.dependabot.listAlertsForRepo
-      ).toHaveBeenCalledWith({
-        owner: 'owner',
-        repo: 'repo',
-        state: 'open',
-        per_page: 100
-      })
+      expect(mockPaginateIterator).toHaveBeenCalledWith(
+        mockOctokit.rest.dependabot.listAlertsForRepo,
+        {
+          owner: 'owner',
+          repo: 'repo',
+          state: 'open',
+          per_page: 100
+        }
+      )
 
       // Should only return high severity alert (medium+ threshold, open state)
       // Critical alert is dismissed, so excluded
@@ -128,48 +269,54 @@ describe('GitHub API Functions', () => {
     })
 
     it('should include dismissed alerts when excludeDismissed is false', async () => {
-      // Mock the API to return all alerts when state: 'all'
-      mockOctokit.rest.dependabot.listAlertsForRepo.mockResolvedValueOnce({
-        data: mockAlertsAll
-      })
+      // Mock the paginate iterator to return all alerts
+      mockPaginateIterator.mockReturnValueOnce(
+        (async function* () {
+          yield { data: mockAlertsAll }
+        })()
+      )
 
       const result = await getDependabotAlerts('owner', 'repo', {
         excludeDismissed: false,
         severityThreshold: 'low'
       })
 
-      expect(
-        mockOctokit.rest.dependabot.listAlertsForRepo
-      ).toHaveBeenCalledWith({
-        owner: 'owner',
-        repo: 'repo',
-        state: 'all',
-        per_page: 100
-      })
+      expect(mockPaginateIterator).toHaveBeenCalledWith(
+        mockOctokit.rest.dependabot.listAlertsForRepo,
+        {
+          owner: 'owner',
+          repo: 'repo',
+          state: 'all',
+          per_page: 100
+        }
+      )
 
       // Should return all 3 alerts
       expect(result).toHaveLength(3)
     })
 
     it('should include low severity when threshold is low and exclude dismissed alerts', async () => {
-      // API returns only open alerts when excludeDismissed is true
-      mockOctokit.rest.dependabot.listAlertsForRepo.mockResolvedValueOnce({
-        data: mockAlertsOpen
-      })
+      // Mock paginate iterator to return only open alerts
+      mockPaginateIterator.mockReturnValueOnce(
+        (async function* () {
+          yield { data: mockAlertsOpen }
+        })()
+      )
 
       const result = await getDependabotAlerts('owner', 'repo', {
         excludeDismissed: true,
         severityThreshold: 'low'
       })
 
-      expect(
-        mockOctokit.rest.dependabot.listAlertsForRepo
-      ).toHaveBeenCalledWith({
-        owner: 'owner',
-        repo: 'repo',
-        state: 'open',
-        per_page: 100
-      })
+      expect(mockPaginateIterator).toHaveBeenCalledWith(
+        mockOctokit.rest.dependabot.listAlertsForRepo,
+        {
+          owner: 'owner',
+          repo: 'repo',
+          state: 'open',
+          per_page: 100
+        }
+      )
 
       // Should include both open alerts (high + low), exclude dismissed critical
       expect(result.map((a) => a.number).sort()).toEqual([1, 2])
@@ -185,7 +332,12 @@ describe('GitHub API Functions', () => {
 
     it('should handle GitHub API errors', async () => {
       const apiError = new Error('API rate limit exceeded')
-      mockOctokit.rest.dependabot.listAlertsForRepo.mockRejectedValue(apiError)
+      // Mock iterator that throws an error
+      mockPaginateIterator.mockReturnValueOnce(
+        (async function* () {
+          throw apiError
+        })()
+      )
 
       await expect(getDependabotAlerts('owner', 'repo')).rejects.toThrow(
         'API rate limit exceeded'
@@ -194,6 +346,85 @@ describe('GitHub API Functions', () => {
       expect(mockCore.error).toHaveBeenCalledWith(
         'Failed to fetch Dependabot alerts: API rate limit exceeded'
       )
+    })
+
+    it('should paginate through multiple pages of alerts', async () => {
+      // Create 150 mock alerts across 2 pages
+      const page1Alerts = Array.from({ length: 100 }, (_, i) => ({
+        number: i + 1,
+        security_advisory: { severity: 'high' },
+        state: 'open'
+      }))
+
+      const page2Alerts = Array.from({ length: 50 }, (_, i) => ({
+        number: i + 101,
+        security_advisory: { severity: 'high' },
+        state: 'open'
+      }))
+
+      // Mock paginate iterator to yield two pages
+      mockPaginateIterator.mockReturnValueOnce(
+        (async function* () {
+          yield { data: page1Alerts }
+          yield { data: page2Alerts }
+        })()
+      )
+
+      const result = await getDependabotAlerts('owner', 'repo', {
+        excludeDismissed: true,
+        severityThreshold: 'low'
+      })
+
+      // Verify paginate.iterator was called with correct params
+      expect(mockPaginateIterator).toHaveBeenCalledWith(
+        mockOctokit.rest.dependabot.listAlertsForRepo,
+        {
+          owner: 'owner',
+          repo: 'repo',
+          state: 'open',
+          per_page: 100
+        }
+      )
+
+      // Verify all 150 alerts were returned
+      expect(result).toHaveLength(150)
+      expect(result[0].number).toBe(1)
+      expect(result[149].number).toBe(150)
+    })
+
+    it('should handle exactly 100 alerts (boundary)', async () => {
+      const alerts = Array.from({ length: 100 }, (_, i) => ({
+        number: i + 1,
+        state: 'open',
+        security_advisory: {
+          ghsa_id: `GHSA-${String(i).padStart(4, '0')}-xxxx-yyyy`,
+          summary: 'Test vulnerability',
+          severity: 'high'
+        },
+        security_vulnerability: {
+          package: { name: 'test-package', ecosystem: 'npm' },
+          severity: 'high',
+          vulnerable_version_range: '< 1.0.0',
+          first_patched_version: { identifier: '1.0.0' }
+        },
+        dependency: {
+          package: { name: 'test-package', ecosystem: 'npm' }
+        },
+        created_at: '2023-01-01T00:00:00Z',
+        updated_at: '2023-01-02T00:00:00Z',
+        html_url: `https://github.com/test/repo/security/dependabot/${i + 1}`
+      }))
+
+      // Mock pagination iterator to return alerts
+      const mockIterator = (async function* () {
+        yield { data: alerts }
+      })()
+
+      mockPaginateIterator.mockReturnValue(mockIterator)
+
+      const result = await getDependabotAlerts('test', 'repo')
+
+      expect(result).toHaveLength(100)
     })
   })
 

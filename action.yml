@@ -116,6 +116,11 @@ inputs:
     default:
       'This issue has been automatically closed because the associated
       Dependabot alert was resolved.'
+  reopen-transition:
+    description:
+      'Jira transition name to reopen closed issues (e.g., "Reopen", "To Do")'
+    required: false
+    default: 'Proposed'
   dry-run:
     description: 'If true, only log what would be done without making changes'
     required: false
@@ -127,6 +132,10 @@ outputs:
     description: 'Number of new Jira issues created'
   issues-updated:
     description: 'Number of existing Jira issues updated'
+  alerts-grouped-by-ghsa:
+    description: 'Number of alerts grouped into issues with the same GHSA ID'
+  issues-reopened:
+    description: 'Number of closed issues reopened due to new alerts'
   issues-closed:
     description: 'Number of Jira issues closed due to resolved alerts'
   alerts-processed:
@@ -135,5 +144,5 @@ outputs:
     description: 'Summary of the sync operation'
 
 runs:
-  using: node20
+  using: node24
   main: dist/index.js

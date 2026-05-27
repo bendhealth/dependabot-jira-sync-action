@@ -19,9 +19,11 @@
 import { jest } from '@jest/globals'
 import {
   createJiraClient,
-  findExistingIssue,
+  findDependabotIssues,
+  extractAllAlertUrlsFromIssue,
+  extractAlertIdFromUrl,
   createJiraIssue,
-  updateJiraIssue,
+  syncJiraIssueStatus,
   closeJiraIssue
 } from '../src/jira.js'
 
@@ -94,7 +96,21 @@ maybeDescribe('Jira integration (live)', () => {
     let issue = null
     for (let i = 0; i < 5; i++) {
       await new Promise((resolve) => setTimeout(resolve, 2000))
-      issue = await findExistingIssue(jiraClient, projectKey, alert.id)
+      const issues = await findDependabotIssues(
+        jiraClient,
+        projectKey,
+        jiraConfig.labels,
+        false // Get all issues
+      )
+      issue = issues.find((iss) => {
+        const urls = extractAllAlertUrlsFromIssue(iss)
+        if (urls.length === 0) return false
+        // Check if any URL matches our alert ID
+        return urls.some((url) => {
+          const id = extractAlertIdFromUrl(url)
+          return id === alert.id.toString()
+        })
+      })
       if (issue) break
     }
     expect(issue).toBeDefined()

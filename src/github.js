@@ -111,16 +111,33 @@ export async function getDependabotAlerts(owner, repo, options = {}) {
   core.info(`Fetching Dependabot alerts for ${owner}/${repo}`)
 
   try {
-    // Get Dependabot alerts using the REST API
-    const response = await octokit.rest.dependabot.listAlertsForRepo({
-      owner,
-      repo,
-      state: excludeDismissed ? 'open' : 'all',
-      per_page: 100
-    })
+    // Pagination: GitHub uses link-based pagination for Dependabot alerts
+    let allAlerts = []
+    const perPage = 100
 
-    const alerts = response.data
-    core.info(`Found ${alerts.length} total alerts`)
+    // Use octokit.paginate to automatically follow Link headers
+    const iterator = octokit.paginate.iterator(
+      octokit.rest.dependabot.listAlertsForRepo,
+      {
+        owner,
+        repo,
+        state: excludeDismissed ? 'open' : 'all',
+        per_page: perPage
+      }
+    )
+
+    let pageNum = 0
+    for await (const response of iterator) {
+      pageNum++
+      const alerts = response.data
+      allAlerts = allAlerts.concat(alerts)
+
+      core.info(
+        `Retrieved ${alerts.length} alerts on page ${pageNum} (${allAlerts.length} total so far)`
+      )
+    }
+
+    core.info(`Found ${allAlerts.length} total alerts`)
 
     // Filter by severity threshold
     const severityLevels = ['low', 'medium', 'high', 'critical']
@@ -132,7 +149,7 @@ export async function getDependabotAlerts(owner, repo, options = {}) {
       throw new Error(`Invalid severity threshold: ${severityThreshold}`)
     }
 
-    const filteredAlerts = alerts.filter((alert) => {
+    const filteredAlerts = allAlerts.filter((alert) => {
       const alertSeverity = alert.security_advisory?.severity?.toLowerCase()
       const alertSeverityIndex = severityLevels.indexOf(alertSeverity)
       return alertSeverityIndex >= minSeverityIndex
@@ -207,15 +224,7 @@ export async function getAlertStatus(owner, repo, alertId) {
     const alert = response.data
 
     // Map GitHub states to our simplified states
-    if (alert.state === 'open') {
-      return 'open'
-    } else if (alert.state === 'dismissed') {
-      return 'dismissed'
-    } else if (alert.state === 'fixed') {
-      return 'fixed'
-    } else {
-      return alert.state // Return whatever GitHub says
-    }
+    return alert.state // Return whatever GitHub says
   } catch (error) {
     if (error.status === 404) {
       core.info(`Alert #${alertId} not found (may have been deleted)`)

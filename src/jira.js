@@ -2,16 +2,44 @@ import * as core from '@actions/core'
 import axios from 'axios'
 
 /**
- * Sanitize input for use in JQL queries to prevent injection
- * @param {string} input - User input to sanitize
- * @returns {string} Sanitized input safe for JQL
+ * Escape input for use in JQL queries to prevent injection
+ * This escapes special JQL characters according to Atlassian documentation
+ * @param {string} input - User input to escape
+ * @returns {string} Escaped input safe for JQL
  */
-function sanitizeForJQL(input) {
+function escapeForJQL(input) {
   if (!input || typeof input !== 'string') {
     return ''
   }
-  // Remove or escape characters that could be used for JQL injection
-  return input.replace(/['"\\]/g, '').trim()
+  // Escape special JQL characters: quotes, backslashes, and other operators
+  // According to Jira JQL documentation, we need to escape quotes and backslashes
+  // Also remove control characters and newlines that could break JQL syntax
+  return input
+    .replace(/\\/g, '\\\\') // Escape backslashes first
+    .replace(/"/g, '\\"') // Escape double quotes
+    .replace(/'/g, "\\'") // Escape single quotes
+    .replace(/[\n\r\t]/g, ' ') // Replace newlines/tabs with spaces
+    .trim()
+}
+
+/**
+ * Validate that a string is safe for use in JQL (alphanumeric, dash, underscore only)
+ * Use this for project keys and other structured fields
+ * @param {string} input - Input to validate
+ * @returns {string} Validated input
+ * @throws {Error} If input contains unsafe characters
+ */
+function validateJQLSafeString(input) {
+  if (!input || typeof input !== 'string') {
+    throw new Error('Input must be a non-empty string')
+  }
+  // Only allow alphanumeric, dash, and underscore (safe for project keys, etc.)
+  if (!/^[A-Z0-9_-]+$/i.test(input)) {
+    throw new Error(
+      `Input contains unsafe characters: ${input}. Only alphanumeric, dash, and underscore allowed.`
+    )
+  }
+  return input
 }
 
 /**
@@ -21,6 +49,81 @@ function sanitizeForJQL(input) {
  */
 function validateProjectKey(projectKey) {
   return /^[A-Z0-9_-]+$/i.test(projectKey)
+}
+
+/**
+ * Sanitize text for safe use in Jira ADF (Atlassian Document Format)
+ * Removes potentially dangerous content and limits length
+ * @param {string} text - Text to sanitize
+ * @param {number} maxLength - Maximum allowed length (default 5000)
+ * @returns {string} Sanitized text
+ */
+function sanitizeADFText(text, maxLength = 5000) {
+  if (!text || typeof text !== 'string') {
+    return ''
+  }
+
+  // Remove control characters except newlines and tabs
+  let sanitized = text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
+
+  // Remove any HTML/script tags or event handlers (defense in depth)
+  // Remove complete script tags
+  sanitized = sanitized.replace(/<script[^>]*>.*?<\/script>/gi, '')
+  // Remove any remaining opening or closing script tags
+  sanitized = sanitized.replace(/<\/?script[^>]*>/gi, '')
+  // Remove other dangerous tags
+  sanitized = sanitized.replace(/<\/?iframe[^>]*>/gi, '')
+  sanitized = sanitized.replace(/<\/?object[^>]*>/gi, '')
+  sanitized = sanitized.replace(/<\/?embed[^>]*>/gi, '')
+  // Remove event handlers
+  sanitized = sanitized.replace(/on\w+\s*=/gi, '')
+
+  // Limit length to prevent DoS
+  if (sanitized.length > maxLength) {
+    sanitized = sanitized.substring(0, maxLength) + '... (truncated)'
+  }
+
+  return sanitized.trim()
+}
+
+/**
+ * Validate and sanitize an alert ID (must be positive integer)
+ * @param {number|string} alertId - Alert ID to validate
+ * @returns {string} Validated alert ID as string
+ * @throws {Error} If alert ID is invalid
+ */
+function validateAlertId(alertId) {
+  const id = parseInt(alertId, 10)
+  if (isNaN(id) || id < 1) {
+    throw new Error(`Invalid alert ID: ${alertId}. Must be a positive integer.`)
+  }
+  return id.toString()
+}
+
+/**
+ * Validate and sanitize URL
+ * @param {string} url - URL to validate
+ * @returns {string} Validated URL
+ * @throws {Error} If URL is invalid
+ */
+function validateUrl(url) {
+  if (!url || typeof url !== 'string') {
+    throw new Error('URL must be a non-empty string')
+  }
+
+  try {
+    const parsed = new URL(url)
+    // Only allow https URLs from github.com
+    if (parsed.protocol !== 'https:') {
+      throw new Error('URL must use HTTPS protocol')
+    }
+    if (!parsed.hostname.endsWith('github.com')) {
+      throw new Error('URL must be from github.com domain')
+    }
+    return parsed.href
+  } catch (error) {
+    throw new Error(`Invalid URL: ${url}. ${error.message}`)
+  }
 }
 
 /**
@@ -52,26 +155,75 @@ export function createJiraClient(jiraUrl, username, apiToken) {
     headers: {
       'Content-Type': 'application/json',
       Accept: 'application/json'
-    }
+    },
+    timeout: 30000 // 30 second timeout (Item 18)
   })
 
-  // Add response interceptor for error handling
+  // Add request interceptor for retry logic with exponential backoff (Item 10)
+  client.interceptors.request.use(async (config) => {
+    // Track retry state in the config
+    config.metadata = config.metadata || {}
+    config.metadata.retryCount = config.metadata.retryCount || 0
+    return config
+  })
+
+  // Add response interceptor for error handling and retry logic
   client.interceptors.response.use(
     (response) => response,
-    (error) => {
+    async (error) => {
+      const config = error.config || {}
       const status = error.response?.status
       const statusText = error.response?.statusText
       const errorMessages = error.response?.data?.errorMessages?.join(', ')
       const message = error.response?.data?.message
       const errors = error.response?.data?.errors
 
-      let errorDetails = `Status: ${status} ${statusText}`
-      if (errorMessages) errorDetails += ` | Error Messages: ${errorMessages}`
-      if (message) errorDetails += ` | Message: ${message}`
-      if (errors) errorDetails += ` | Errors: ${JSON.stringify(errors)}`
-      if (error.response?.data)
-        errorDetails += ` | Response: ${JSON.stringify(error.response.data)}`
+      // Retry logic for rate limiting and transient errors (Item 10)
+      const maxRetries = 3
+      const retryableStatuses = [429, 503, 502, 504] // Rate limit, service unavailable, bad gateway, gateway timeout
+      const retryCount = (config.metadata && config.metadata.retryCount) || 0
 
+      if (retryableStatuses.includes(status) && retryCount < maxRetries) {
+        config.metadata.retryCount = retryCount + 1
+
+        // Exponential backoff: 1s, 2s, 4s
+        const delay = Math.pow(2, retryCount) * 1000
+
+        // Check for Retry-After header (used by rate limiting)
+        const retryAfter = error.response?.headers['retry-after']
+        const actualDelay = retryAfter ? parseInt(retryAfter, 10) * 1000 : delay
+
+        core.warning(
+          `Jira API returned ${status}, retrying in ${actualDelay}ms (attempt ${retryCount + 1}/${maxRetries})`
+        )
+
+        await new Promise((resolve) => setTimeout(resolve, actualDelay))
+        return client.request(config)
+      }
+
+      // Sanitize error details - avoid exposing full response which may contain sensitive data
+      let errorDetails = `Status: ${status} ${statusText}`
+      if (errorMessages) {
+        // Truncate long error messages to prevent log flooding
+        const truncated =
+          errorMessages.length > 500
+            ? errorMessages.substring(0, 500) + '...'
+            : errorMessages
+        errorDetails += ` | Error Messages: ${truncated}`
+      }
+      if (message) {
+        // Truncate long messages
+        const truncated =
+          message.length > 200 ? message.substring(0, 200) + '...' : message
+        errorDetails += ` | Message: ${truncated}`
+      }
+      if (errors) {
+        // Only include field names, not values (values might be sensitive)
+        const fieldNames = Object.keys(errors).join(', ')
+        errorDetails += ` | Error Fields: ${fieldNames}`
+      }
+
+      // Do NOT log full response data as it may contain sensitive information
       core.error(`Jira API Error: ${errorDetails}`)
       throw new Error(`Jira API Error: ${errorDetails}`)
     }
@@ -126,47 +278,6 @@ export function calculateDueDate(severity, dueDaysConfig, createdAt) {
 }
 
 /**
- * Check if a Jira issue already exists for a Dependabot alert
- * @param {Object} jiraClient - Jira API client
- * @param {string} projectKey - Jira project key
- * @param {number} alertId - Dependabot alert ID
- * @returns {Promise<Object|null>} Existing issue or null
- */
-export async function findExistingIssue(jiraClient, projectKey, alertId) {
-  // Validate inputs
-  if (!validateProjectKey(projectKey)) {
-    throw new Error(`Invalid project key format: ${projectKey}`)
-  }
-
-  const sanitizedProjectKey = sanitizeForJQL(projectKey)
-  const sanitizedAlertId = parseInt(alertId, 10)
-
-  if (isNaN(sanitizedAlertId)) {
-    throw new Error(`Invalid alert ID: ${alertId}`)
-  }
-
-  try {
-    const jql = `project = "${sanitizedProjectKey}" AND summary ~ "Dependabot Alert #${sanitizedAlertId}"`
-
-    const response = await jiraClient.get('/search/jql', {
-      params: {
-        jql,
-        fields: 'key,summary,status,updated'
-      }
-    })
-
-    core.debug(
-      `Search JQL: ${jql}, found ${response.data?.issues?.length || 0} issues`
-    )
-    return response.data?.issues?.length > 0 ? response.data.issues[0] : null
-  } catch (error) {
-    // Surface API errors so the workflow fails rather than silently skipping
-    core.error(`Failed to search for existing issue: ${error.message}`)
-    throw error
-  }
-}
-
-/**
  * Create a new Jira issue for a Dependabot alert
  * @param {Object} jiraClient - Jira API client
  * @param {Object} config - Jira configuration
@@ -182,10 +293,27 @@ export async function createJiraIssue(
 ) {
   const { projectKey, issueType, priority, labels, assignee } = config
 
+  // Validate and sanitize alert data from external API
+  const sanitizedAlert = {
+    id: validateAlertId(alert.id),
+    title: sanitizeADFText(alert.title, 200),
+    package: sanitizeADFText(alert.package, 200),
+    ecosystem: sanitizeADFText(alert.ecosystem, 100),
+    severity: sanitizeADFText(alert.severity, 50),
+    vulnerableVersionRange: sanitizeADFText(alert.vulnerableVersionRange, 200),
+    firstPatchedVersion: sanitizeADFText(alert.firstPatchedVersion, 100),
+    description: sanitizeADFText(alert.description, 5000),
+    cveId: alert.cveId ? sanitizeADFText(alert.cveId, 50) : null,
+    ghsaId: alert.ghsaId ? sanitizeADFText(alert.ghsaId, 50) : null,
+    url: validateUrl(alert.url),
+    cvss: alert.cvss ? parseFloat(alert.cvss) : null,
+    createdAt: alert.createdAt
+  }
+
   const dueDate = calculateDueDate(
-    alert.severity,
+    sanitizedAlert.severity,
     config.dueDays,
-    alert.createdAt
+    sanitizedAlert.createdAt
   )
 
   const description = {
@@ -200,7 +328,7 @@ export async function createJiraIssue(
         content: [
           {
             type: 'text',
-            text: `Dependabot Security Alert #${alert.id}`
+            text: `Dependabot Security Alert #${sanitizedAlert.id}`
           }
         ]
       },
@@ -218,7 +346,7 @@ export async function createJiraIssue(
           },
           {
             type: 'text',
-            text: alert.package
+            text: sanitizedAlert.package
           }
         ]
       },
@@ -232,7 +360,7 @@ export async function createJiraIssue(
           },
           {
             type: 'text',
-            text: alert.ecosystem
+            text: sanitizedAlert.ecosystem
           }
         ]
       },
@@ -246,7 +374,7 @@ export async function createJiraIssue(
           },
           {
             type: 'text',
-            text: alert.severity.toUpperCase()
+            text: sanitizedAlert.severity.toUpperCase()
           }
         ]
       },
@@ -260,7 +388,7 @@ export async function createJiraIssue(
           },
           {
             type: 'text',
-            text: alert.vulnerableVersionRange || 'Not available'
+            text: sanitizedAlert.vulnerableVersionRange || 'Not available'
           }
         ]
       },
@@ -274,7 +402,7 @@ export async function createJiraIssue(
           },
           {
             type: 'text',
-            text: alert.firstPatchedVersion || 'Not available'
+            text: sanitizedAlert.firstPatchedVersion || 'Not available'
           }
         ]
       },
@@ -299,11 +427,11 @@ export async function createJiraIssue(
         content: [
           {
             type: 'text',
-            text: alert.description
+            text: sanitizedAlert.description
           }
         ]
       },
-      ...(alert.cvss
+      ...(sanitizedAlert.cvss
         ? [
             {
               type: 'paragraph',
@@ -319,13 +447,13 @@ export async function createJiraIssue(
                 },
                 {
                   type: 'text',
-                  text: alert.cvss.toString()
+                  text: sanitizedAlert.cvss.toString()
                 }
               ]
             }
           ]
         : []),
-      ...(alert.cveId
+      ...(sanitizedAlert.cveId
         ? [
             {
               type: 'paragraph',
@@ -341,13 +469,13 @@ export async function createJiraIssue(
                 },
                 {
                   type: 'text',
-                  text: alert.cveId
+                  text: sanitizedAlert.cveId
                 }
               ]
             }
           ]
         : []),
-      ...(alert.ghsaId
+      ...(sanitizedAlert.ghsaId
         ? [
             {
               type: 'paragraph',
@@ -363,7 +491,7 @@ export async function createJiraIssue(
                 },
                 {
                   type: 'text',
-                  text: alert.ghsaId
+                  text: sanitizedAlert.ghsaId
                 }
               ]
             }
@@ -383,12 +511,12 @@ export async function createJiraIssue(
           },
           {
             type: 'text',
-            text: alert.url,
+            text: sanitizedAlert.url,
             marks: [
               {
                 type: 'link',
                 attrs: {
-                  href: alert.url
+                  href: sanitizedAlert.url
                 }
               }
             ]
@@ -418,7 +546,7 @@ export async function createJiraIssue(
   const issueData = {
     fields: {
       project: { key: projectKey },
-      summary: `Dependabot Alert #${alert.id}: ${alert.title}`,
+      summary: `Dependabot Alert #${sanitizedAlert.id}: ${sanitizedAlert.title}`,
       description,
       issuetype: { name: issueType },
       duedate: dueDate
@@ -426,7 +554,7 @@ export async function createJiraIssue(
   }
 
   // Priority is optional - only include if provided (some next-gen projects don't support it)
-  const resolvedPriority = resolvePriority(priority, alert.severity)
+  const resolvedPriority = resolvePriority(priority, sanitizedAlert.severity)
   if (resolvedPriority) {
     issueData.fields.priority = { name: resolvedPriority }
   }
@@ -460,280 +588,272 @@ export async function createJiraIssue(
 }
 
 /**
- * Update an existing Jira issue for a Dependabot alert
+ * Sync Jira issue status with Dependabot alert state
+ * Checks if the issue is closed and reopens it if the alert is still open
  * @param {Object} jiraClient - Jira API client
  * @param {string} issueKey - Jira issue key
- * @param {Object} alert - Parsed Dependabot alert
+ * @param {Object} alert - Parsed Dependabot alert (used for logging only)
  * @param {boolean} dryRun - Whether this is a dry run
- * @returns {Promise<Object>} Update result
+ * @param {string} reopenTransition - Transition name to reopen issues (default: 'Reopened')
+ * @returns {Promise<Object>} Sync result with { updated: false, reopened, dryRun }
  */
-export async function updateJiraIssue(
+export async function syncJiraIssueStatus(
   jiraClient,
   issueKey,
   alert,
-  dryRun = false,
-  customComment = null
+  dryRun,
+  reopenTransition
 ) {
-  // If a custom comment is provided, use it (convert plain text to ADF if needed)
-  // Otherwise, build the default alert-based comment
-  const comment = customComment
-    ? {
-        type: 'doc',
-        version: 1,
-        content: [
-          {
-            type: 'paragraph',
-            content: [
-              {
-                type: 'text',
-                text: customComment
-              }
-            ]
-          }
-        ]
-      }
-    : {
-        type: 'doc',
-        version: 1,
-        content: [
-          {
-            type: 'heading',
-            attrs: {
-              level: 3
-            },
-            content: [
-              {
-                type: 'text',
-                text: 'Dependabot Alert Updated'
-              }
-            ]
-          },
-          {
-            type: 'paragraph',
-            content: []
-          },
-          {
-            type: 'paragraph',
-            content: [
-              {
-                type: 'text',
-                text: `The Dependabot alert #${alert.id} has been updated.`
-              }
-            ]
-          },
-          {
-            type: 'paragraph',
-            content: []
-          },
-          {
-            type: 'paragraph',
-            content: [
-              {
-                type: 'text',
-                text: 'Current Status: ',
-                marks: [{ type: 'strong' }]
-              },
-              {
-                type: 'text',
-                text: alert.state
-              }
-            ]
-          },
-          {
-            type: 'paragraph',
-            content: [
-              {
-                type: 'text',
-                text: 'Last Updated: ',
-                marks: [{ type: 'strong' }]
-              },
-              {
-                type: 'text',
-                text: new Date(alert.updatedAt).toLocaleString()
-              }
-            ]
-          },
-          ...(alert.dismissedAt
-            ? [
-                {
-                  type: 'paragraph',
-                  content: []
-                },
-                {
-                  type: 'paragraph',
-                  content: [
-                    {
-                      type: 'text',
-                      text: 'Dismissed At: ',
-                      marks: [{ type: 'strong' }]
-                    },
-                    {
-                      type: 'text',
-                      text: new Date(alert.dismissedAt).toLocaleString()
-                    }
-                  ]
-                }
-              ]
-            : []),
-          ...(alert.dismissedReason
-            ? [
-                {
-                  type: 'paragraph',
-                  content: []
-                },
-                {
-                  type: 'paragraph',
-                  content: [
-                    {
-                      type: 'text',
-                      text: 'Dismissed Reason: ',
-                      marks: [{ type: 'strong' }]
-                    },
-                    {
-                      type: 'text',
-                      text: alert.dismissedReason
-                    }
-                  ]
-                }
-              ]
-            : []),
-          ...(alert.dismissedComment
-            ? [
-                {
-                  type: 'paragraph',
-                  content: []
-                },
-                {
-                  type: 'paragraph',
-                  content: [
-                    {
-                      type: 'text',
-                      text: 'Dismissed Comment: ',
-                      marks: [{ type: 'strong' }]
-                    },
-                    {
-                      type: 'text',
-                      text: alert.dismissedComment
-                    }
-                  ]
-                }
-              ]
-            : []),
-          {
-            type: 'paragraph',
-            content: []
-          },
-          {
-            type: 'paragraph',
-            content: [
-              {
-                type: 'text',
-                text: 'GitHub Alert URL: ',
-                marks: [{ type: 'strong' }]
-              },
-              {
-                type: 'text',
-                text: alert.url,
-                marks: [
-                  {
-                    type: 'link',
-                    attrs: {
-                      href: alert.url
-                    }
-                  }
-                ]
-              }
-            ]
-          }
-        ]
-      }
-
+  // In dry run mode, skip API calls (issue key might be "DRY-RUN-KEY")
   if (dryRun) {
-    core.info(`[DRY RUN] Would update Jira issue ${issueKey} with comment`)
-    return { updated: true, dryRun: true }
+    core.info(`[DRY RUN] Would check if issue ${issueKey} needs reopening`)
+    return { updated: false, reopened: false, dryRun: true }
   }
 
+  let reopened = false
+
+  // Fetch the existing issue to check if it's closed
   try {
-    await jiraClient.post(`/issue/${issueKey}/comment`, {
-      body: comment
+    const issueResponse = await jiraClient.get(`/issue/${issueKey}`, {
+      params: {
+        fields: 'status,resolution'
+      }
     })
 
-    core.info(`Updated Jira issue: ${issueKey}`)
-    return { updated: true }
+    // Check if the issue is closed by checking the resolution field
+    // In Jira, if resolution is not null/empty, the issue is closed/resolved
+    // This works across all Jira workflows regardless of status names
+    const isClosed = issueResponse.data.fields.resolution != null
+
+    if (isClosed) {
+      const issueStatus = issueResponse.data.fields.status?.name || 'Unknown'
+      const resolution =
+        issueResponse.data.fields.resolution?.name || 'Resolved'
+      core.info(
+        `Issue ${issueKey} is resolved (Status: ${issueStatus}, Resolution: ${resolution}). ${dryRun ? 'Would reopen' : 'Reopening'}.`
+      )
+
+      const reopenResult = await reopenJiraIssue(
+        jiraClient,
+        issueKey,
+        reopenTransition,
+        `Reopening because the Dependabot alert is still open: ${alert.url}`,
+        dryRun
+      )
+
+      reopened = reopenResult.reopened || false
+    }
   } catch (error) {
-    core.error(`Failed to update Jira issue ${issueKey}: ${error.message}`)
-    throw error
+    core.warning(
+      `Could not fetch issue ${issueKey} to check status: ${error.message}`
+    )
+    // Continue without reopening if we can't fetch
   }
+
+  // syncJiraIssueStatus only syncs the status (reopen if needed) - it doesn't add comments
+  core.debug(`Synced issue ${issueKey} status - reopened: ${reopened}`)
+
+  return { updated: false, reopened, dryRun }
 }
 
 /**
- * Find all open Dependabot issues in a Jira project
+ * Find all Dependabot issues in a Jira project (both open and resolved)
  * @param {Object} jiraClient - Axios instance for Jira API
  * @param {string} projectKey - Jira project key
- * @returns {Promise<Array>} Array of open Dependabot issues
+ * @param {string} labels - Comma-separated list of labels (e.g., "dependabot,security")
+ * @param {boolean} onlyOpen - If true, only return unresolved issues (default: false)
+ * @param {string} owner - GitHub repository owner (optional, for filtering by repo)
+ * @param {string} repo - GitHub repository name (optional, for filtering by repo)
+ * @returns {Promise<Array>} Array of Dependabot issues
  */
-export async function findOpenDependabotIssues(jiraClient, projectKey) {
+export async function findDependabotIssues(
+  jiraClient,
+  projectKey,
+  labels,
+  onlyOpen = false,
+  owner = null,
+  repo = null
+) {
   // Validate inputs
   if (!validateProjectKey(projectKey)) {
     throw new Error(`Invalid project key format: ${projectKey}`)
   }
 
-  const sanitizedProjectKey = sanitizeForJQL(projectKey)
-  const jql = `project = "${sanitizedProjectKey}" AND labels = "dependabot" AND resolution IS EMPTY`
+  // Use validated project key (already checked by validateProjectKey)
+  const validatedProjectKey = validateJQLSafeString(projectKey)
 
-  core.info(`Searching for open Dependabot issues in project ${projectKey}`)
+  // Build label filter from configured labels
+  // Parse comma-separated labels and create JQL conditions
+  const labelArray = labels
+    ? labels
+        .split(',')
+        .map((label) => label.trim())
+        .filter((label) => label.length > 0)
+    : []
+
+  // Build JQL query with label conditions
+  // Use AND to match issues that have all configured labels
+  let jql = `project = "${validatedProjectKey}"`
+
+  if (labelArray.length > 0) {
+    const labelConditions = labelArray
+      .map((label) => `labels = "${escapeForJQL(label)}"`)
+      .join(' AND ')
+    jql += ` AND ${labelConditions}`
+  }
+
+  // Filter by repository to only get issues for this specific repo
+  // Instead of using URL pattern in JQL (which is injectable), we'll filter results after fetching
+  // This is more secure and avoids JQL injection through owner/repo names
+  const filterByRepo = owner && repo
+  if (filterByRepo) {
+    core.debug(`Will filter results to repository: ${owner}/${repo}`)
+  }
+
+  // Optionally filter to only unresolved issues
+  // "resolution IS EMPTY" finds issues that are not resolved/closed/done
+  // This works across different Jira workflows regardless of status names
+  if (onlyOpen) {
+    jql += ' AND resolution IS EMPTY'
+  }
+
+  const scopeMsg = onlyOpen ? 'open' : 'all'
+  const repoMsg = owner && repo ? ` for ${owner}/${repo}` : ''
+  core.info(
+    `Searching for ${scopeMsg} Dependabot issues in project ${projectKey}${repoMsg}`
+  )
+  core.debug(`Using JQL: ${jql}`)
 
   try {
-    const response = await jiraClient.get('/search/jql', {
-      params: {
-        jql,
-        fields: 'key,summary,description,status',
-        maxResults: 100
-      }
-    })
+    // Pagination: Jira returns results in pages
+    // We need to fetch all pages to get all issues
+    let allIssues = []
+    let startAt = 0
+    const maxResults = 100
+    let total = 0
 
-    const issues = response.data.issues || []
-    core.info(`Found ${issues.length} open Dependabot issues`)
-    return issues
+    do {
+      core.debug(
+        `Fetching issues: startAt=${startAt}, maxResults=${maxResults}`
+      )
+
+      const response = await jiraClient.get('/search/jql', {
+        params: {
+          jql,
+          fields: 'key,summary,description,status,resolution',
+          startAt,
+          maxResults
+        }
+      })
+
+      const issues = response.data.issues || []
+      total = response.data.total || 0
+
+      allIssues = allIssues.concat(issues)
+      startAt += issues.length
+
+      core.debug(
+        `Retrieved ${issues.length} issues (${allIssues.length} of ${total} total)`
+      )
+
+      // Continue if there are more issues to fetch
+    } while (startAt < total)
+
+    // If repository filtering is requested, filter results by checking URLs in descriptions
+    // This is done post-fetch to avoid JQL injection through owner/repo names
+    if (filterByRepo) {
+      const repoUrlPattern = `https://github.com/${owner}/${repo}/security/dependabot/`
+      allIssues = allIssues.filter((issue) => {
+        const urls = extractAllAlertUrlsFromIssue(issue)
+        return urls.some((url) => url.startsWith(repoUrlPattern))
+      })
+      core.debug(
+        `Filtered to ${allIssues.length} issues for repository ${owner}/${repo}`
+      )
+    }
+
+    core.info(
+      `Found ${allIssues.length} ${scopeMsg} Dependabot issues${repoMsg}`
+    )
+    return allIssues
   } catch (error) {
     // Surface API errors so the workflow fails rather than silently skipping
-    core.error(`Failed to search for open Dependabot issues: ${error.message}`)
+    core.error(`Failed to search for Dependabot issues: ${error.message}`)
     throw error
   }
 }
 
 /**
- * Extract Dependabot alert ID from Jira issue
+ * Extract ALL GitHub alert URLs from Jira issue description
  * @param {Object} issue - Jira issue object
- * @returns {string|null} Alert ID or null if not found
+ * @returns {string[]} Array of GitHub alert URLs (may be empty)
  */
-export function extractAlertIdFromIssue(issue) {
-  // Debug: Log the issue structure
-  core.debug(
-    `Debug: Issue ${issue.key} structure: ${JSON.stringify(issue, null, 2)}`
-  )
-
+export function extractAllAlertUrlsFromIssue(issue) {
   // Jira API often nests fields under 'fields' object
-  const summary = issue.summary || issue.fields?.summary
   const description = issue.description || issue.fields?.description
 
-  core.info(`Info: Extracted summary: "${summary}"`)
-
-  // Try to extract from summary first: "Dependabot Alert #123: ..."
-  const summaryMatch = summary?.match(/Dependabot Alert #(\d+)/)
-  if (summaryMatch) {
-    core.info(`Info: Successfully extracted alert ID: ${summaryMatch[1]}`)
-    return summaryMatch[1]
+  if (!description) {
+    return []
   }
 
-  // Try to extract from description: "Alert ID: 123"
-  const descriptionMatch = description?.match(/Alert ID:\s*(\d+)/)
-  if (descriptionMatch) {
-    return descriptionMatch[1]
+  // Extract ALL GitHub alert URLs from the description (ADF format)
+  // Pattern: https://github.com/{owner}/{repo}/security/dependabot/{number}
+  const descriptionStr = JSON.stringify(description)
+  const urlMatches = descriptionStr.matchAll(
+    /https:\/\/github\.com\/[^/]+\/[^/]+\/security\/dependabot\/\d+/g
+  )
+
+  const urls = Array.from(urlMatches, (match) => match[0])
+
+  if (urls.length > 0) {
+    core.debug(
+      `Extracted ${urls.length} alert URL(s) from description of ${issue.key}: ${urls.join(', ')}`
+    )
   }
 
-  core.warning(`Could not extract alert ID from issue ${issue.key}`)
+  return urls
+}
+
+/**
+ * Extract GHSA ID from a Jira issue description
+ * @param {Object} issue - Jira issue object
+ * @returns {string|null} GHSA ID or null if not found
+ */
+export function extractGhsaIdFromIssue(issue) {
+  // Jira API often nests fields under 'fields' object
+  const description = issue.description || issue.fields?.description
+
+  if (!description) {
+    return null
+  }
+
+  // Extract GHSA ID from the description (ADF format)
+  // Pattern: GHSA-xxxx-xxxx-xxxx (e.g., GHSA-1234-5678-9abc)
+  const descriptionStr = JSON.stringify(description)
+  const ghsaMatch = descriptionStr.match(
+    /GHSA-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}/i
+  )
+
+  if (ghsaMatch) {
+    const ghsaId = ghsaMatch[0].toUpperCase()
+    core.debug(`Extracted GHSA ID ${ghsaId} from issue ${issue.key}`)
+    return ghsaId
+  }
+
   return null
+}
+
+/**
+ * Extract alert ID from a GitHub Dependabot URL
+ * @param {string} url - GitHub alert URL (e.g., https://github.com/owner/repo/security/dependabot/42)
+ * @returns {string|null} Alert ID or null if cannot be extracted
+ */
+export function extractAlertIdFromUrl(url) {
+  if (!url) return null
+
+  // Extract the number from the URL path
+  const match = url.match(/\/security\/dependabot\/(\d+)/)
+  return match ? match[1] : null
 }
 
 /**
@@ -810,6 +930,185 @@ export async function closeJiraIssue(
     return { closed: true }
   } catch (error) {
     core.error(`Failed to close Jira issue ${issueKey}: ${error.message}`)
+    throw error
+  }
+}
+
+/**
+ * Append a GitHub alert URL to an existing Jira issue description
+ * @param {Object} jiraClient - Axios instance for Jira API
+ * @param {string} issueKey - Jira issue key
+ * @param {string} alertUrl - GitHub Dependabot alert URL to append
+ * @param {boolean} dryRun - Whether this is a dry run
+ * @returns {Promise<Object>} Update result
+ */
+export async function appendAlertUrlToIssue(
+  jiraClient,
+  issueKey,
+  alertUrl,
+  dryRun = false
+) {
+  if (dryRun) {
+    core.info(
+      `[DRY RUN] Would append alert URL to issue ${issueKey}: ${alertUrl}`
+    )
+    return { updated: true, dryRun: true }
+  }
+
+  try {
+    // Fetch current issue to get the description
+    const issueResponse = await jiraClient.get(`/issue/${issueKey}`, {
+      params: {
+        fields: 'description'
+      }
+    })
+
+    const currentDescription = issueResponse.data.fields.description || {
+      type: 'doc',
+      version: 1,
+      content: []
+    }
+
+    // Check if the URL is already in the description
+    const descriptionStr = JSON.stringify(currentDescription)
+    if (descriptionStr.includes(alertUrl)) {
+      core.info(
+        `Alert URL already exists in issue ${issueKey}, skipping append`
+      )
+      return { updated: false, alreadyExists: true }
+    }
+
+    // Append the new alert URL to the description
+    const newContent = [
+      ...currentDescription.content,
+      {
+        type: 'paragraph',
+        content: []
+      },
+      {
+        type: 'paragraph',
+        content: [
+          {
+            type: 'text',
+            text: 'Additional GitHub Alert URL: ',
+            marks: [{ type: 'strong' }]
+          },
+          {
+            type: 'text',
+            text: alertUrl,
+            marks: [
+              {
+                type: 'link',
+                attrs: {
+                  href: alertUrl
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+
+    const updatedDescription = {
+      type: 'doc',
+      version: 1,
+      content: newContent
+    }
+
+    // Update the issue description
+    await jiraClient.put(`/issue/${issueKey}`, {
+      fields: {
+        description: updatedDescription
+      }
+    })
+
+    core.info(`Appended alert URL to issue ${issueKey}: ${alertUrl}`)
+    return { updated: true }
+  } catch (error) {
+    core.error(
+      `Failed to append alert URL to issue ${issueKey}: ${error.message}`
+    )
+    throw error
+  }
+}
+
+/**
+ * Reopen a closed Jira issue by transitioning it to an open state
+ * @param {Object} jiraClient - Axios instance for Jira API
+ * @param {string} issueKey - Jira issue key
+ * @param {string} reopenTransition - Transition name to reopen (e.g., "Reopened", "To Do")
+ * @param {string} comment - Comment to add when reopening
+ * @param {boolean} dryRun - Whether this is a dry run
+ * @returns {Promise<Object>} Result of the operation
+ */
+export async function reopenJiraIssue(
+  jiraClient,
+  issueKey,
+  reopenTransition,
+  comment,
+  dryRun = false
+) {
+  if (dryRun) {
+    core.info(
+      `[DRY RUN] Would reopen issue ${issueKey} using transition "${reopenTransition}"`
+    )
+    return { reopened: true, dryRun: true }
+  }
+
+  try {
+    // Get available transitions for this issue
+    const transitionsResponse = await jiraClient.get(
+      `/issue/${issueKey}/transitions`
+    )
+    const availableTransitions = transitionsResponse.data.transitions || []
+
+    // Find the transition by name (case-insensitive)
+    const targetTransition = availableTransitions.find(
+      (t) => t.name.toLowerCase() === reopenTransition.toLowerCase()
+    )
+
+    if (!targetTransition) {
+      const availableNames = availableTransitions.map((t) => t.name).join(', ')
+      core.warning(
+        `Transition "${reopenTransition}" not available for issue ${issueKey}. Available transitions: ${availableNames}. Issue may already be open.`
+      )
+      return { reopened: false, transitionNotAvailable: true }
+    }
+
+    // Add comment first
+    if (comment) {
+      await jiraClient.post(`/issue/${issueKey}/comment`, {
+        body: {
+          type: 'doc',
+          version: 1,
+          content: [
+            {
+              type: 'paragraph',
+              content: [
+                {
+                  type: 'text',
+                  text: comment
+                }
+              ]
+            }
+          ]
+        }
+      })
+    }
+
+    // Perform the transition
+    await jiraClient.post(`/issue/${issueKey}/transitions`, {
+      transition: {
+        id: targetTransition.id
+      }
+    })
+
+    core.info(
+      `Reopened Jira issue: ${issueKey} using transition "${reopenTransition}"`
+    )
+    return { reopened: true }
+  } catch (error) {
+    core.error(`Failed to reopen Jira issue ${issueKey}: ${error.message}`)
     throw error
   }
 }

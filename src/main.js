@@ -7,12 +7,15 @@ import {
 } from './github.js'
 import {
   createJiraClient,
-  findExistingIssue,
   createJiraIssue,
-  updateJiraIssue,
-  findOpenDependabotIssues,
-  extractAlertIdFromIssue,
-  closeJiraIssue
+  syncJiraIssueStatus,
+  findDependabotIssues,
+  extractAllAlertUrlsFromIssue,
+  extractGhsaIdFromIssue,
+  extractAlertIdFromUrl,
+  closeJiraIssue,
+  appendAlertUrlToIssue,
+  reopenJiraIssue
 } from './jira.js'
 
 /**
@@ -88,6 +91,8 @@ function getConfig() {
       closeComment:
         core.getInput('close-comment') ||
         'This issue has been automatically closed because the associated Dependabot alert was resolved.',
+      // JBR note: 'Reopen' is dead code, but used by the unit tests to verify
+      reopenTransition: core.getInput('reopen-transition') || 'Reopen',
       dryRun: core.getBooleanInput('dry-run') === true
     }
   }
@@ -134,8 +139,51 @@ export async function run() {
       config.jira.apiToken
     )
 
+    // Fetch all existing Dependabot issues once (more efficient than N individual queries)
+    core.info('Fetching existing Dependabot issues from Jira...')
+    const existingIssues = await findDependabotIssues(
+      jiraClient,
+      config.jira.projectKey,
+      config.jira.labels,
+      false, // Get all issues (both open and resolved)
+      owner, // Filter by current repository
+      repo
+    )
+
+    // Build lookup maps:
+    // 1. alertUrl -> Jira issue (for matching by URL)
+    // 2. ghsaId -> Jira issue (for GHSA-based grouping)
+    // Note: All Dependabot alerts have a GHSA ID, so we only group by GHSA
+    const issueMap = new Map()
+    const ghsaMap = new Map()
+
+    for (const issue of existingIssues) {
+      // Extract ALL alert URLs from the issue and map each one
+      const alertUrls = extractAllAlertUrlsFromIssue(issue)
+      for (const alertUrl of alertUrls) {
+        issueMap.set(alertUrl, issue)
+        core.debug(`Mapped alert URL ${alertUrl} to Jira issue ${issue.key}`)
+      }
+
+      // Map by GHSA ID for grouping alerts with the same vulnerability
+      const ghsaId = extractGhsaIdFromIssue(issue)
+      if (ghsaId) {
+        // GHSA might map to multiple issues, but we'll use the first one found
+        if (!ghsaMap.has(ghsaId)) {
+          ghsaMap.set(ghsaId, issue)
+          core.debug(`Mapped GHSA ID ${ghsaId} to Jira issue ${issue.key}`)
+        }
+      }
+    }
+
+    core.info(
+      `Built lookup maps: ${issueMap.size} URL mappings, ${ghsaMap.size} GHSA mappings from ${existingIssues.length} Jira issues`
+    )
+
     let issuesCreated = 0
     let issuesUpdated = 0
+    let issuesReopened = 0
+    let alertsGroupedByGhsa = 0
     let processingErrors = 0
     const processedAlerts = []
 
@@ -147,42 +195,103 @@ export async function run() {
 
         core.info(`Processing alert #${parsedAlert.id}: ${parsedAlert.title}`)
 
-        // Check if issue already exists
-        const existingIssue = await findExistingIssue(
-          jiraClient,
-          config.jira.projectKey,
-          parsedAlert.id
-        )
+        // Check if issue already exists using in-memory lookup by URL
+        const existingIssue = issueMap.get(parsedAlert.url)
 
         if (existingIssue) {
           if (config.behavior.updateExisting) {
             core.info(`Found existing issue: ${existingIssue.key}`)
-            await updateJiraIssue(
+            const updateResult = await syncJiraIssueStatus(
               jiraClient,
               existingIssue.key,
               parsedAlert,
-              config.behavior.dryRun
+              config.behavior.dryRun,
+              config.behavior.reopenTransition
             )
-            issuesUpdated++
+
+            // Only increment counter if we actually updated (not skipped due to no changes)
+            if (updateResult.updated) {
+              issuesUpdated++
+            }
+
+            if (updateResult.reopened) {
+              issuesReopened++
+            }
           } else {
             core.info(
               `Skipping existing issue: ${existingIssue.key} (update-existing is false)`
             )
           }
         } else {
-          // Create new issue
-          const newIssue = await createJiraIssue(
-            jiraClient,
-            config.jira,
-            parsedAlert,
-            config.behavior.dryRun
-          )
-          issuesCreated++
+          // Before creating a new issue, check if there's an existing issue for this GHSA
+          // All Dependabot alerts have a GHSA ID, so we only need to check that
+          let ghsaIssue = null
+          if (parsedAlert.ghsaId) {
+            ghsaIssue = ghsaMap.get(parsedAlert.ghsaId)
+            if (ghsaIssue) {
+              core.info(
+                `Found existing GHSA issue ${ghsaIssue.key} for ${parsedAlert.ghsaId} (in-memory lookup)`
+              )
+            }
+          }
 
-          if (!config.behavior.dryRun) {
+          if (ghsaIssue) {
+            // Found an existing issue for this GHSA - append the URL
+            core.info(
+              `Found existing GHSA issue ${ghsaIssue.key} for ${parsedAlert.ghsaId}. Appending alert URL.`
+            )
+
+            // Append the alert URL to the existing issue
+            const appendResult = await appendAlertUrlToIssue(
+              jiraClient,
+              ghsaIssue.key,
+              parsedAlert.url,
+              config.behavior.dryRun
+            )
+
+            if (appendResult.updated) {
+              alertsGroupedByGhsa++
+            }
+
+            // Sync the issue status and reopen if closed
+            const updateResult = await syncJiraIssueStatus(
+              jiraClient,
+              ghsaIssue.key,
+              parsedAlert,
+              config.behavior.dryRun,
+              config.behavior.reopenTransition
+            )
+
+            if (updateResult.reopened) {
+              issuesReopened++
+            }
+          } else {
+            // No existing issue for this GHSA - create new issue
+            const newIssue = await createJiraIssue(
+              jiraClient,
+              config.jira,
+              parsedAlert,
+              config.behavior.dryRun
+            )
+            // If createJiraIssue threw an error, execution won't reach here
+            // Only update our state if the issue was successfully created (or dry run succeeded)
+            issuesCreated++
+
             core.info(
               `✅ Created Jira issue ${newIssue.key} for alert #${parsedAlert.id}`
             )
+
+            // Add the new issue to our in-memory maps so subsequent alerts can find it
+            // This happens for both dry runs and real runs to ensure grouping works correctly
+            issueMap.set(parsedAlert.url, newIssue)
+            if (parsedAlert.ghsaId) {
+              if (!ghsaMap.has(parsedAlert.ghsaId)) {
+                ghsaMap.set(parsedAlert.ghsaId, newIssue)
+                core.debug(
+                  `Added ${newIssue.key} to GHSA map for ${parsedAlert.ghsaId}`
+                )
+              }
+            }
           }
         }
       } catch (error) {
@@ -204,35 +313,86 @@ export async function run() {
       core.info('\n🔄 Checking for resolved alerts to auto-close...')
 
       try {
-        // Find all open Dependabot issues in Jira
-        const openIssues = await findOpenDependabotIssues(
+        // Find only open Dependabot issues in Jira
+        const openIssues = await findDependabotIssues(
           jiraClient,
-          config.jira.projectKey
+          config.jira.projectKey,
+          config.jira.labels,
+          true, // Only fetch unresolved issues
+          owner, // Filter by current repository
+          repo
         )
 
         for (const issue of openIssues) {
           try {
-            // Extract alert ID from the issue
-            const alertId = extractAlertIdFromIssue(issue)
-            if (!alertId) {
-              continue // Skip if we can't extract alert ID
+            // Extract ALL alert URLs from the issue to check for cross-repo references
+            const allAlertUrls = extractAllAlertUrlsFromIssue(issue)
+            if (allAlertUrls.length === 0) {
+              core.debug(
+                `No Dependabot alert URLs found in issue ${issue.key}, skipping`
+              )
+              continue
             }
 
-            // Check status of the alert in GitHub
-            const alertStatus = await getAlertStatus(owner, repo, alertId)
+            // Check if there are URLs from other repositories
+            const currentRepoPattern = `https://github.com/${owner}/${repo}/security/dependabot/`
+            const currentRepoUrls = allAlertUrls.filter((url) =>
+              url.startsWith(currentRepoPattern)
+            )
+            const otherRepoUrls = allAlertUrls.filter(
+              (url) => !url.startsWith(currentRepoPattern)
+            )
 
-            // Close issue if alert is resolved
-            if (
-              alertStatus === 'fixed' ||
-              alertStatus === 'dismissed' ||
-              alertStatus === 'not_found'
-            ) {
-              const reason =
-                alertStatus === 'not_found'
-                  ? 'Alert was deleted from GitHub'
-                  : `Alert was ${alertStatus} in GitHub`
+            if (otherRepoUrls.length > 0) {
+              core.warning(
+                `Issue ${issue.key} contains Dependabot URLs from other repositories: ${otherRepoUrls.join(', ')}. Skipping auto-close to avoid closing issues for other repos.`
+              )
+              continue
+            }
 
-              const closeComment = `${config.behavior.closeComment}\n\nReason: ${reason}`
+            // Check status of ALL alerts from current repo
+            const alertStatuses = []
+            for (const alertUrl of currentRepoUrls) {
+              const alertId = extractAlertIdFromUrl(alertUrl)
+              if (!alertId) {
+                core.warning(
+                  `Could not extract alert ID from URL ${alertUrl} in issue ${issue.key}`
+                )
+                continue
+              }
+
+              const alertStatus = await getAlertStatus(owner, repo, alertId)
+              alertStatuses.push({ alertId, alertUrl, status: alertStatus })
+            }
+
+            if (alertStatuses.length === 0) {
+              core.warning(
+                `No valid alert IDs found in issue ${issue.key}, skipping`
+              )
+              continue
+            }
+
+            // Check if ALL alerts are resolved
+            const allResolved = alertStatuses.every(
+              (a) =>
+                a.status === 'fixed' ||
+                a.status === 'dismissed' ||
+                a.status === 'not_found'
+            )
+
+            // Check if ANY alerts are still open
+            const anyOpen = alertStatuses.some((a) => a.status === 'open')
+
+            // Check if issue is currently closed
+            // In Jira, if resolution is not null/empty, the issue is closed/resolved
+            // This works across all Jira workflows regardless of status names
+            const isClosed = issue.fields?.resolution != null
+
+            // Determine action based on issue state and alert statuses
+            if (allResolved && !isClosed) {
+              // All alerts resolved and issue is open -> Close it
+              const resolvedCount = alertStatuses.length
+              const closeComment = `${config.behavior.closeComment}\n\nAll ${resolvedCount} associated Dependabot alert(s) for this repository have been resolved.`
 
               await closeJiraIssue(
                 jiraClient,
@@ -246,16 +406,49 @@ export async function run() {
 
               if (!config.behavior.dryRun) {
                 core.info(
-                  `🔒 Closed Jira issue ${issue.key} (Alert #${alertId} was ${alertStatus})`
+                  `🔒 Closed Jira issue ${issue.key} (all ${resolvedCount} alerts resolved)`
                 )
               }
-            } else if (alertStatus === 'open') {
-              core.debug(
-                `Alert #${alertId} is still open, keeping Jira issue ${issue.key} open`
+            } else if (anyOpen && isClosed) {
+              // Some alerts still open but issue is closed -> Reopen it
+              const openAlerts = alertStatuses.filter(
+                (a) => a.status === 'open'
               )
-            } else {
-              core.warning(
-                `Unknown status '${alertStatus}' for alert #${alertId}, keeping issue ${issue.key} open`
+              const openAlertIds = openAlerts
+                .map((a) => `#${a.alertId}`)
+                .join(', ')
+
+              const reopenComment = `Reopening issue because it still has open Dependabot alerts for this repository: ${openAlertIds}`
+
+              const reopenResult = await reopenJiraIssue(
+                jiraClient,
+                issue.key,
+                config.behavior.reopenTransition,
+                reopenComment,
+                config.behavior.dryRun
+              )
+
+              if (reopenResult.reopened) {
+                issuesReopened++
+
+                if (!config.behavior.dryRun) {
+                  core.info(
+                    `🔓 Reopened Jira issue ${issue.key} (${openAlerts.length} alert(s) still open)`
+                  )
+                }
+              }
+            } else if (!allResolved && !isClosed) {
+              // Some alerts unresolved and issue is open -> Keep open
+              const openCount = alertStatuses.filter(
+                (a) => a.status === 'open'
+              ).length
+              core.debug(
+                `Issue ${issue.key} has ${openCount} open alert(s), keeping open`
+              )
+            } else if (allResolved && isClosed) {
+              // All resolved and already closed -> No action needed
+              core.debug(
+                `Issue ${issue.key} is already closed and all alerts resolved`
               )
             }
           } catch (error) {
@@ -279,13 +472,15 @@ export async function run() {
 
     // Generate summary
     const summary = config.behavior.dryRun
-      ? `DRY RUN: Would create ${issuesCreated} issues, update ${issuesUpdated} issues, and close ${issuesClosed} issues`
-      : `Created ${issuesCreated} new issues, updated ${issuesUpdated} existing issues, and closed ${issuesClosed} resolved issues`
+      ? `DRY RUN: Would create ${issuesCreated} issues, update ${issuesUpdated} issues, group ${alertsGroupedByGhsa} alerts by GHSA, reopen ${issuesReopened} issues, and close ${issuesClosed} issues`
+      : `Created ${issuesCreated} new issues, updated ${issuesUpdated} existing issues, grouped ${alertsGroupedByGhsa} alerts by GHSA, reopened ${issuesReopened} closed issues, and closed ${issuesClosed} resolved issues`
 
     core.info(`\n📊 Summary:`)
     core.info(`- Alerts processed: ${processedAlerts.length}`)
     core.info(`- Issues created: ${issuesCreated}`)
     core.info(`- Issues updated: ${issuesUpdated}`)
+    core.info(`- Alerts grouped by GHSA: ${alertsGroupedByGhsa}`)
+    core.info(`- Issues reopened: ${issuesReopened}`)
     core.info(`- Issues closed: ${issuesClosed}`)
 
     if (config.behavior.dryRun) {
@@ -295,6 +490,8 @@ export async function run() {
     // Set outputs
     core.setOutput('issues-created', issuesCreated.toString())
     core.setOutput('issues-updated', issuesUpdated.toString())
+    core.setOutput('alerts-grouped-by-ghsa', alertsGroupedByGhsa.toString())
+    core.setOutput('issues-reopened', issuesReopened.toString())
     core.setOutput('issues-closed', issuesClosed.toString())
     core.setOutput('alerts-processed', processedAlerts.length.toString())
     core.setOutput('summary', summary)

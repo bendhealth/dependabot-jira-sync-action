@@ -38,6 +38,11 @@ scalability.
   (recommended) with fine-grained permissions and auto-rotating tokens
 - 🛡️ **Automatic Security Alert Sync**: Fetches Dependabot alerts and creates
   corresponding Jira issues
+- 🔗 **GHSA-Based Alert Grouping**: Automatically groups multiple alerts for the
+  same vulnerability (GHSA ID) into a single Jira issue instead of creating
+  duplicates
+- ♻️ **Auto-Reopen Closed Issues**: Reopens closed Jira issues when new alerts
+  are found for the same GHSA
 - ⏰ **Severity-Based Due Dates**: Configure different due dates for critical,
   high, medium, and low severity alerts (calculated from alert creation date)
 - 🔄 **Smart Updates**: Updates existing Jira issues when alerts change or are
@@ -47,10 +52,10 @@ scalability.
 - 🧪 **Dry Run Mode**: Test the action without making actual changes
 - 🎯 **Flexible Filtering**: Filter by severity threshold and dismissed status
 - 📝 **Rich Issue Details**: Includes vulnerability details, CVSS scores, CVE
-  IDs, and GitHub links
+  IDs, GHSA IDs, and GitHub links
 - 🔧 **Highly Configurable**: Customize Jira project, issue types, priorities,
   labels, and assignments
-- 🧪 **Comprehensive Testing**: 80%+ code coverage with extensive unit tests
+- 🧪 **Comprehensive Testing**: 90%+ code coverage with extensive unit tests
 
 ## 🚀 Quick Start
 
@@ -203,17 +208,20 @@ vulnerabilities maintain proper urgency.
 | `auto-close-resolved` | Auto-close Jira issues when alerts are resolved | `true`                                                                                           | ❌       |
 | `close-transition`    | Jira transition name to close issues            | `Done`                                                                                           | ❌       |
 | `close-comment`       | Comment to add when auto-closing issues         | `This issue has been automatically closed because the associated Dependabot alert was resolved.` | ❌       |
+| `reopen-transition`   | Jira transition name to reopen closed issues    | `Reopen`                                                                                         | ❌       |
 | `dry-run`             | Only log what would be done                     | `false`                                                                                          | ❌       |
 
 ## 📤 Outputs
 
-| Output             | Description                           | Example                                                                        |
-| ------------------ | ------------------------------------- | ------------------------------------------------------------------------------ |
-| `issues-created`   | Number of new Jira issues created     | `3`                                                                            |
-| `issues-updated`   | Number of existing issues updated     | `1`                                                                            |
-| `issues-closed`    | Number of issues closed automatically | `2`                                                                            |
-| `alerts-processed` | Total alerts processed                | `4`                                                                            |
-| `summary`          | Summary of the operation              | `Created 3 new issues, updated 1 existing issue, and closed 2 resolved issues` |
+| Output                   | Description                           | Example                                                                                                  |
+| ------------------------ | ------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `issues-created`         | Number of new Jira issues created     | `3`                                                                                                      |
+| `issues-updated`         | Number of existing issues updated     | `1`                                                                                                      |
+| `alerts-grouped-by-ghsa` | Number of alerts grouped by GHSA ID   | `2`                                                                                                      |
+| `issues-reopened`        | Number of closed issues reopened      | `1`                                                                                                      |
+| `issues-closed`          | Number of issues closed automatically | `2`                                                                                                      |
+| `alerts-processed`       | Total alerts processed                | `4`                                                                                                      |
+| `summary`                | Summary of the operation              | `Created 3 new issues, updated 1 issue, grouped 2 alerts by GHSA, reopened 1 issue, and closed 2 issues` |
 
 ## 🔧 Setup Requirements
 
@@ -312,6 +320,26 @@ Labels: dependabot, security
 Priority: High
 ```
 
+### Example Issue with GHSA Grouping
+
+When multiple alerts share the same GHSA ID, they're grouped into one issue:
+
+```
+Summary: Dependabot Alert #42: Critical vulnerability in lodash
+
+Description:
+*Dependabot Security Alert #42*
+[... vulnerability details ...]
+*GHSA ID:* GHSA-jf85-cpcp-j695
+
+*GitHub Alert URL:* https://github.com/company/repo-a/security/dependabot/42
+https://github.com/company/repo-b/security/dependabot/15
+https://github.com/company/repo-a/security/dependabot/43
+
+---
+_One issue tracks 2 alerts across 1 repositories for the same vulnerability. The other repository will need a separate issue._
+```
+
 ## 🔍 Dry Run Mode
 
 Test the action without making changes:
@@ -327,11 +355,44 @@ Test the action without making changes:
     dry-run: 'true' # 🧪 No actual changes will be made
 ```
 
-## 🎯 Auto-Close Functionality
+## 🔗 GHSA-Based Alert Grouping
+
+The action automatically groups multiple Dependabot alerts for the same
+vulnerability (identified by GHSA ID) into a single Jira issue, reducing clutter
+and improving traceability.
+
+### How It Works
+
+1. **When processing alerts**, the action checks if a Jira issue already exists
+   for the same GHSA ID
+2. **If found**, it appends the new alert URL to the existing issue's
+   description instead of creating a duplicate
+3. **If the issue was closed**, it automatically reopens it with a comment
+   explaining the new alert
+4. **Multiple repositories** can share the same GHSA ID; a single ticket will be
+   made for each issue.
+
+### Example Scenario
+
+```
+Repository A: Alert #42 (GHSA-xxxx-yyyy-zzzz) → Creates SEC-100
+Repository B: Alert #15 (GHSA-xxxx-yyyy-zzzz) → Appends to SEC-100
+Repository A: Alert #43 (GHSA-xxxx-yyyy-zzzz) → Appends to SEC-100
+
+Result: 2 Jira issues, one per repository, tracking 3 alerts for the same vulnerability
+```
+
+### Benefits
+
+- **Reduced Noise**: One issue per unique vulnerability instead of one per alert
+- **Better Context**: See all affected repositories and alerts in one place
+- **Easier Remediation**: Fix the vulnerability once, close all related alerts
+
+## 🎯 Auto-Close & Auto-Reopen Functionality
 
 The action can automatically close Jira issues when the corresponding Dependabot
-alerts are resolved in GitHub. This ensures your Jira board stays clean and
-up-to-date.
+alerts are resolved in GitHub, and reopen them if new alerts appear for the same
+GHSA.
 
 ### How It Works
 
@@ -344,6 +405,8 @@ up-to-date.
    - ✅ **Fixed** (patched by a dependency update)
    - ✅ **Dismissed** (manually dismissed in GitHub)
    - ✅ **Not Found** (alert was deleted)
+5. **Automatically reopens** closed issues when new alerts are found for the
+   same GHSA
 
 ### Configuration
 
@@ -351,6 +414,7 @@ up-to-date.
 auto-close-resolved: 'true'
 close-transition: 'Done' # Your Jira workflow transition
 close-comment: 'Alert was automatically resolved in GitHub'
+reopen-transition: 'Reopen' # Your Jira workflow transition for reopening
 ```
 
 ### Example Log Output
@@ -361,7 +425,9 @@ close-comment: 'Alert was automatically resolved in GitHub'
 ✅ Alert #42 is fixed - closing issue SEC-123
 ℹ️  Alert #43 is still open - keeping issue SEC-124 open
 ❌ Alert #44 not found - closing issue SEC-125
-📊 Auto-closed 2 resolved issues
+🔄 Found existing GHSA issue SEC-100 for GHSA-xxxx-yyyy-zzzz. Appending alert URL.
+♻️  Issue SEC-100 is in closed state (Done). Reopening.
+📊 Auto-closed 2 resolved issues, reopened 1 issue
 ```
 
 ## 📊 Monitoring & Observability
@@ -374,11 +440,15 @@ The action provides detailed logging:
 🔍 Fetching Dependabot alerts for company/awesome-app
 📋 Found 5 total alerts
 🎯 3 alerts match severity threshold: medium
+Built lookup maps: 10 URL mappings, 8 GHSA mappings from 10 Jira issues
 🔄 Processing alert #42: Critical vulnerability in lodash
 ✅ Created Jira issue TEST-123 for alert #42
 🔄 Processing alert #43: High severity issue in axios
 ℹ️  Found existing issue: TEST-100
 ✅ Updated Jira issue: TEST-100
+🔄 Processing alert #44: Critical vulnerability in lodash
+🔗 Found existing GHSA issue TEST-123 for GHSA-jf85-cpcp-j695. Appending alert URL.
+✅ Appended alert URL to existing issue TEST-123
 
 🔄 Checking for resolved alerts to auto-close...
 🔍 Found 2 open Dependabot issues
@@ -386,9 +456,11 @@ The action provides detailed logging:
 ℹ️  Alert #40 is still open - keeping issue TEST-98 open
 
 📊 Summary:
-- Alerts processed: 3
+- Alerts processed: 4
 - Issues created: 1
 - Issues updated: 1
+- Alerts grouped by GHSA: 1
+- Issues reopened: 0
 - Issues closed: 1
 ✅ Dependabot Jira Sync completed successfully
 ```
