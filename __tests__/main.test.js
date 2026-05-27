@@ -25,7 +25,7 @@ const mockGithub = {
 const mockJira = {
   createJiraClient: jest.fn(),
   createJiraIssue: jest.fn(),
-  updateJiraIssue: jest.fn(),
+  syncJiraIssueStatus: jest.fn(),
   findDependabotIssues: jest.fn(),
   extractAllAlertUrlsFromIssue: jest.fn(),
   extractGhsaIdFromIssue: jest.fn(),
@@ -101,7 +101,7 @@ describe('Dependabot Jira Sync', () => {
     mockJira.appendAlertUrlToIssue.mockResolvedValue({ updated: true })
     mockJira.reopenJiraIssue.mockResolvedValue({ reopened: true })
     mockJira.createJiraIssue.mockResolvedValue({ key: 'TEST-123' })
-    mockJira.updateJiraIssue.mockResolvedValue({ updated: true })
+    mockJira.syncJiraIssueStatus.mockResolvedValue({ updated: true })
   })
 
   afterEach(() => {
@@ -208,7 +208,7 @@ describe('Dependabot Jira Sync', () => {
 
     await run()
 
-    expect(mockJira.updateJiraIssue).toHaveBeenCalledWith(
+    expect(mockJira.syncJiraIssueStatus).toHaveBeenCalledWith(
       expect.any(Object), // jiraClient
       'TEST-456',
       parsedAlert,
@@ -503,7 +503,7 @@ describe('Dependabot Jira Sync', () => {
     mockJira.extractAllAlertUrlsFromIssue.mockReturnValue([
       'https://github.com/test/alert/1'
     ])
-    mockJira.updateJiraIssue.mockResolvedValue({
+    mockJira.syncJiraIssueStatus.mockResolvedValue({
       updated: true,
       reopened: true
     })
@@ -511,8 +511,8 @@ describe('Dependabot Jira Sync', () => {
     await run()
 
     // Should reopen because the matched issue is closed but alert is still open
-    // updateJiraIssue now handles reopening internally, so check it was called
-    expect(mockJira.updateJiraIssue).toHaveBeenCalledWith(
+    // syncJiraIssueStatus now handles reopening internally, so check it was called
+    expect(mockJira.syncJiraIssueStatus).toHaveBeenCalledWith(
       expect.any(Object),
       'TEST-456',
       parsedAlert,
@@ -788,16 +788,16 @@ describe('Dependabot Jira Sync', () => {
     // Should NOT create any new issues
     expect(mockJira.createJiraIssue).not.toHaveBeenCalled()
 
-    // Should update the existing issue for both alerts (found by URL)
-    expect(mockJira.updateJiraIssue).toHaveBeenCalledTimes(2)
-    expect(mockJira.updateJiraIssue).toHaveBeenCalledWith(
+    // Should sync the status for both alerts (found by URL)
+    expect(mockJira.syncJiraIssueStatus).toHaveBeenCalledTimes(2)
+    expect(mockJira.syncJiraIssueStatus).toHaveBeenCalledWith(
       expect.any(Object),
       'TEST-200',
       parsedAlert1,
       false,
       'Reopen'
     )
-    expect(mockJira.updateJiraIssue).toHaveBeenCalledWith(
+    expect(mockJira.syncJiraIssueStatus).toHaveBeenCalledWith(
       expect.any(Object),
       'TEST-200',
       parsedAlert2,

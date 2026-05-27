@@ -41,7 +41,7 @@ const {
   calculateDueDate,
   resolvePriority,
   createJiraIssue,
-  updateJiraIssue,
+  syncJiraIssueStatus,
   findDependabotIssues,
   extractAllAlertUrlsFromIssue,
   extractAlertIdFromUrl,
@@ -446,7 +446,7 @@ describe('Jira API Functions', () => {
     })
   })
 
-  describe('updateJiraIssue', () => {
+  describe('syncJiraIssueStatus', () => {
     const mockAlert = {
       id: 42,
       state: 'open',
@@ -464,7 +464,7 @@ describe('Jira API Functions', () => {
         }
       })
 
-      const result = await updateJiraIssue(
+      const result = await syncJiraIssueStatus(
         mockAxiosInstance,
         'SEC-123',
         mockAlert,
@@ -502,7 +502,7 @@ describe('Jira API Functions', () => {
       })
       mockAxiosInstance.post.mockResolvedValue({ data: {} })
 
-      const result = await updateJiraIssue(
+      const result = await syncJiraIssueStatus(
         mockAxiosInstance,
         'SEC-123',
         mockAlert,
@@ -521,7 +521,7 @@ describe('Jira API Functions', () => {
     it('should handle fetch errors gracefully', async () => {
       mockAxiosInstance.get.mockRejectedValue(new Error('Fetch failed'))
 
-      const result = await updateJiraIssue(
+      const result = await syncJiraIssueStatus(
         mockAxiosInstance,
         'SEC-123',
         mockAlert,
@@ -541,7 +541,7 @@ describe('Jira API Functions', () => {
     })
 
     it('should handle dry run mode without making API calls', async () => {
-      const result = await updateJiraIssue(
+      const result = await syncJiraIssueStatus(
         mockAxiosInstance,
         'DRY-RUN-KEY', // Use the dry run key that doesn't exist in Jira
         mockAlert,

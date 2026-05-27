@@ -8,7 +8,7 @@ import {
 import {
   createJiraClient,
   createJiraIssue,
-  updateJiraIssue,
+  syncJiraIssueStatus,
   findDependabotIssues,
   extractAllAlertUrlsFromIssue,
   extractGhsaIdFromIssue,
@@ -201,7 +201,7 @@ export async function run() {
         if (existingIssue) {
           if (config.behavior.updateExisting) {
             core.info(`Found existing issue: ${existingIssue.key}`)
-            const updateResult = await updateJiraIssue(
+            const updateResult = await syncJiraIssueStatus(
               jiraClient,
               existingIssue.key,
               parsedAlert,
@@ -253,8 +253,8 @@ export async function run() {
               alertsGroupedByGhsa++
             }
 
-            // Update the issue and reopen if closed
-            const updateResult = await updateJiraIssue(
+            // Sync the issue status and reopen if closed
+            const updateResult = await syncJiraIssueStatus(
               jiraClient,
               ghsaIssue.key,
               parsedAlert,

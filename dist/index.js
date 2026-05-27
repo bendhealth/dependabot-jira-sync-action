@@ -71940,16 +71940,16 @@ async function createJiraIssue(
 }
 
 /**
- * Update an existing Jira issue for a Dependabot alert
- * Checks if the issue is closed and reopens it if necessary
+ * Sync Jira issue status with Dependabot alert state
+ * Checks if the issue is closed and reopens it if the alert is still open
  * @param {Object} jiraClient - Jira API client
  * @param {string} issueKey - Jira issue key
  * @param {Object} alert - Parsed Dependabot alert (used for logging only)
  * @param {boolean} dryRun - Whether this is a dry run
  * @param {string} reopenTransition - Transition name to reopen issues (default: 'Reopened')
- * @returns {Promise<Object>} Update result with { updated: false, reopened, dryRun }
+ * @returns {Promise<Object>} Sync result with { updated: false, reopened, dryRun }
  */
-async function updateJiraIssue(
+async function syncJiraIssueStatus(
   jiraClient,
   issueKey,
   alert,
@@ -72002,8 +72002,8 @@ async function updateJiraIssue(
     // Continue without reopening if we can't fetch
   }
 
-  // updateJiraIssue no longer adds comments - it only checks/reopens closed issues
-  debug(`Checked issue ${issueKey} - reopened: ${reopened}`);
+  // syncJiraIssueStatus only syncs the status (reopen if needed) - it doesn't add comments
+  debug(`Synced issue ${issueKey} status - reopened: ${reopened}`);
 
   return { updated: false, reopened, dryRun }
 }
@@ -72648,7 +72648,7 @@ async function run() {
         if (existingIssue) {
           if (config.behavior.updateExisting) {
             info(`Found existing issue: ${existingIssue.key}`);
-            const updateResult = await updateJiraIssue(
+            const updateResult = await syncJiraIssueStatus(
               jiraClient,
               existingIssue.key,
               parsedAlert,
@@ -72700,8 +72700,8 @@ async function run() {
               alertsGroupedByGhsa++;
             }
 
-            // Update the issue and reopen if closed
-            const updateResult = await updateJiraIssue(
+            // Sync the issue status and reopen if closed
+            const updateResult = await syncJiraIssueStatus(
               jiraClient,
               ghsaIssue.key,
               parsedAlert,

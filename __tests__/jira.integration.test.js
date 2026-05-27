@@ -23,7 +23,7 @@ import {
   extractAllAlertUrlsFromIssue,
   extractAlertIdFromUrl,
   createJiraIssue,
-  updateJiraIssue,
+  syncJiraIssueStatus,
   closeJiraIssue
 } from '../src/jira.js'
 
