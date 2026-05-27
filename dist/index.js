@@ -71953,8 +71953,8 @@ async function updateJiraIssue(
   jiraClient,
   issueKey,
   alert,
-  dryRun = false,
-  reopenTransition = 'Reopened'
+  dryRun,
+  reopenTransition
 ) {
   // In dry run mode, skip API calls (issue key might be "DRY-RUN-KEY")
   if (dryRun) {
@@ -72574,6 +72574,7 @@ function getConfig() {
       closeComment:
         getInput('close-comment') ||
         'This issue has been automatically closed because the associated Dependabot alert was resolved.',
+      // JBR note: 'Reopen' is dead code, but used by the unit tests to verify
       reopenTransition: getInput('reopen-transition') || 'Reopen',
       dryRun: getBooleanInput('dry-run') === true
     }

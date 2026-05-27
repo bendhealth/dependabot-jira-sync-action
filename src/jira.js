@@ -601,8 +601,8 @@ export async function updateJiraIssue(
   jiraClient,
   issueKey,
   alert,
-  dryRun = false,
-  reopenTransition = 'Reopened'
+  dryRun,
+  reopenTransition
 ) {
   // In dry run mode, skip API calls (issue key might be "DRY-RUN-KEY")
   if (dryRun) {

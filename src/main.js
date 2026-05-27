@@ -92,6 +92,7 @@ function getConfig() {
       closeComment:
         core.getInput('close-comment') ||
         'This issue has been automatically closed because the associated Dependabot alert was resolved.',
+      // JBR note: 'Reopen' is dead code, but used by the unit tests to verify
       reopenTransition: core.getInput('reopen-transition') || 'Reopen',
       dryRun: core.getBooleanInput('dry-run') === true
     }
