@@ -627,7 +627,8 @@ export async function updateJiraIssue(
 
     if (isClosed) {
       const issueStatus = issueResponse.data.fields.status?.name || 'Unknown'
-      const resolution = issueResponse.data.fields.resolution?.name || 'Resolved'
+      const resolution =
+        issueResponse.data.fields.resolution?.name || 'Resolved'
       core.info(
         `Issue ${issueKey} is resolved (Status: ${issueStatus}, Resolution: ${resolution}). ${dryRun ? 'Would reopen' : 'Reopening'}.`
       )
