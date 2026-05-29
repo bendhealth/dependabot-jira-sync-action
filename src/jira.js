@@ -750,9 +750,7 @@ export async function findDependabotIssues(
       total = response.data.total || 0
 
       // Debug: log the response structure to diagnose pagination issue
-      core.debug(
-        `Response data keys: ${Object.keys(response.data).join(', ')}`
-      )
+      core.debug(`Response data keys: ${Object.keys(response.data).join(', ')}`)
       core.debug(`Response.data.total: ${response.data.total}`)
       core.debug(`Response.data.maxResults: ${response.data.maxResults}`)
       core.debug(`Response.data.startAt: ${response.data.startAt}`)
