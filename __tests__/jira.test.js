@@ -603,7 +603,8 @@ describe('Jira API Functions', () => {
               },
               status: { name: 'In Progress' }
             }
-          ]
+          ],
+          isLast: true
         }
       }
 
@@ -620,7 +621,6 @@ describe('Jira API Functions', () => {
         params: {
           jql: 'project = "SEC" AND labels = "dependabot" AND resolution IS EMPTY',
           fields: 'key,summary,description,status,resolution',
-          startAt: 0,
           maxResults: 100
         }
       })
@@ -657,7 +657,8 @@ describe('Jira API Functions', () => {
               },
               status: { name: 'Done' }
             }
-          ]
+          ],
+          isLast: true
         }
       }
 
@@ -674,7 +675,6 @@ describe('Jira API Functions', () => {
         params: {
           jql: 'project = "SEC" AND labels = "dependabot"',
           fields: 'key,summary,description,status,resolution',
-          startAt: 0,
           maxResults: 100
         }
       })
@@ -718,7 +718,6 @@ describe('Jira API Functions', () => {
         params: {
           jql: 'project = "SEC" AND labels = "dependabot" AND labels = "security" AND labels = "automated" AND resolution IS EMPTY',
           fields: 'key,summary,description,status,resolution',
-          startAt: 0,
           maxResults: 100
         }
       })
@@ -741,7 +740,6 @@ describe('Jira API Functions', () => {
         params: {
           jql: 'project = "SEC" AND labels = "dependabot" AND labels = "security" AND resolution IS EMPTY',
           fields: 'key,summary,description,status,resolution',
-          startAt: 0,
           maxResults: 100
         }
       })
@@ -756,7 +754,6 @@ describe('Jira API Functions', () => {
         params: {
           jql: 'project = "SEC" AND resolution IS EMPTY',
           fields: 'key,summary,description,status,resolution',
-          startAt: 0,
           maxResults: 100
         }
       })
@@ -860,9 +857,7 @@ describe('Jira API Functions', () => {
               status: { name: 'Open' }
             }
           ],
-          total: 2,
-          startAt: 0,
-          maxResults: 100
+          isLast: true
         }
       }
 
@@ -882,7 +877,6 @@ describe('Jira API Functions', () => {
         params: {
           jql: 'project = "SEC" AND labels = "dependabot" AND resolution IS EMPTY',
           fields: 'key,summary,description,status,resolution',
-          startAt: 0,
           maxResults: 100
         }
       })
@@ -1209,7 +1203,7 @@ describe('Security Tests', () => {
         get: jest.fn().mockResolvedValue({
           data: {
             issues: [],
-            total: 0
+            isLast: true
           }
         })
       }
@@ -1300,7 +1294,7 @@ describe('Security Tests', () => {
                 }
               }
             ],
-            total: 2
+            isLast: true
           }
         })
       }
@@ -1700,7 +1694,7 @@ describe('Advanced Sanitization Tests', () => {
       get: jest.fn().mockResolvedValue({
         data: {
           issues: [],
-          total: 0
+          isLast: true
         }
       })
     }
@@ -2225,9 +2219,7 @@ describe('GHSA Extraction Tests', () => {
       mockAxiosInstance.get.mockResolvedValue({
         data: {
           issues: [],
-          total: 0,
-          startAt: 0,
-          maxResults: 100
+          isLast: true
         }
       })
 
@@ -2243,32 +2235,28 @@ describe('GHSA Extraction Tests', () => {
     })
 
     test('handles Jira pagination with partial last page', async () => {
-      // First page: 100 results
-      // Second page: 100 results
-      // Third page: 50 results (partial)
+      // First page: 100 results, not last (has nextPageToken)
+      // Second page: 100 results, not last (has nextPageToken)
+      // Third page: 50 results, last page
       mockAxiosInstance.get
         .mockResolvedValueOnce({
           data: {
             issues: Array(100).fill({ key: 'TEST-1' }),
-            total: 250,
-            startAt: 0,
-            maxResults: 100
+            isLast: false,
+            nextPageToken: 'page2token'
           }
         })
         .mockResolvedValueOnce({
           data: {
             issues: Array(100).fill({ key: 'TEST-2' }),
-            total: 250,
-            startAt: 100,
-            maxResults: 100
+            isLast: false,
+            nextPageToken: 'page3token'
           }
         })
         .mockResolvedValueOnce({
           data: {
             issues: Array(50).fill({ key: 'TEST-3' }),
-            total: 250,
-            startAt: 200,
-            maxResults: 100
+            isLast: true
           }
         })
 

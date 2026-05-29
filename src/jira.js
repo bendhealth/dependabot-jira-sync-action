@@ -725,45 +725,50 @@ export async function findDependabotIssues(
   core.debug(`Using JQL: ${jql}`)
 
   try {
-    // Pagination: Jira returns results in pages
+    // Pagination: Jira API v3 uses cursor-based pagination with nextPageToken
     // We need to fetch all pages to get all issues
     let allIssues = []
-    let startAt = 0
+    let nextPageToken = null
     const maxResults = 100
-    let total = 0
+    let pageCount = 0
 
     do {
+      pageCount++
+      const params = {
+        jql,
+        fields: 'key,summary,description,status,resolution',
+        maxResults
+      }
+
+      // Add nextPageToken for subsequent pages (cursor-based pagination)
+      if (nextPageToken) {
+        params.nextPageToken = nextPageToken
+      }
+
       core.debug(
-        `Fetching issues: startAt=${startAt}, maxResults=${maxResults}`
+        `Fetching page ${pageCount}: maxResults=${maxResults}, nextPageToken=${nextPageToken || '(none - first page)'}`
       )
 
       const response = await jiraClient.get('/search/jql', {
-        params: {
-          jql,
-          fields: 'key,summary,description,status,resolution',
-          startAt,
-          maxResults
-        }
+        params
       })
 
       const issues = response.data.issues || []
-      total = response.data.total || 0
-
-      // Debug: log the response structure to diagnose pagination issue
-      core.debug(`Response data keys: ${Object.keys(response.data).join(', ')}`)
-      core.debug(`Response.data.total: ${response.data.total}`)
-      core.debug(`Response.data.maxResults: ${response.data.maxResults}`)
-      core.debug(`Response.data.startAt: ${response.data.startAt}`)
+      const isLast = response.data.isLast !== false // Default to true if not present
+      nextPageToken = response.data.nextPageToken || null
 
       allIssues = allIssues.concat(issues)
-      startAt += issues.length
 
       core.debug(
-        `Retrieved ${issues.length} issues (${allIssues.length} of ${total} total)`
+        `Retrieved ${issues.length} issues (${allIssues.length} total so far), isLast: ${isLast}, nextPageToken: ${nextPageToken || '(none)'}`
       )
 
-      // Continue if there are more issues to fetch
-    } while (startAt < total)
+      // Continue if this is not the last page and we have a next page token
+      if (isLast) {
+        core.debug('Reached last page of results')
+        break
+      }
+    } while (nextPageToken)
 
     // If repository filtering is requested, filter results by checking URLs in descriptions
     // This is done post-fetch to avoid JQL injection through owner/repo names
