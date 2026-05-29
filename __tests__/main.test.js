@@ -882,7 +882,10 @@ describe('Dependabot Jira Sync', () => {
     )
 
     expect(mockCore.setOutput).toHaveBeenCalledWith('issues-created', '0')
-    expect(mockCore.setOutput).toHaveBeenCalledWith('alerts-grouped-by-ghsa', '1')
+    expect(mockCore.setOutput).toHaveBeenCalledWith(
+      'alerts-grouped-by-ghsa',
+      '1'
+    )
   })
 
   it('validates config inputs and fails fast on invalid values', async () => {

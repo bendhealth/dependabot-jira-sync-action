@@ -271,7 +271,9 @@ export async function run() {
                 `  ✓ Found existing GHSA issue ${ghsaIssue.key} for ${parsedAlert.ghsaId} (in-memory lookup)`
               )
             } else {
-              core.debug(`  ✗ No existing issue found for GHSA ${parsedAlert.ghsaId}`)
+              core.debug(
+                `  ✗ No existing issue found for GHSA ${parsedAlert.ghsaId}`
+              )
             }
           } else {
             core.debug(`  No GHSA ID for this alert, will create new issue`)
