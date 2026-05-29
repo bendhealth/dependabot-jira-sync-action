@@ -763,12 +763,23 @@ export async function findDependabotIssues(
     // This is done post-fetch to avoid JQL injection through owner/repo names
     if (filterByRepo) {
       const repoUrlPattern = `https://github.com/${owner}/${repo}/security/dependabot/`
+      core.debug(
+        `Filtering ${allIssues.length} issues by repository URL pattern: ${repoUrlPattern}`
+      )
+
+      const beforeFilterCount = allIssues.length
       allIssues = allIssues.filter((issue) => {
         const urls = extractAllAlertUrlsFromIssue(issue)
-        return urls.some((url) => url.startsWith(repoUrlPattern))
+        const matches = urls.some((url) => url.startsWith(repoUrlPattern))
+        if (!matches && urls.length > 0) {
+          core.debug(
+            `Issue ${issue.key} excluded - URLs don't match pattern: ${urls.join(', ')}`
+          )
+        }
+        return matches
       })
-      core.debug(
-        `Filtered to ${allIssues.length} issues for repository ${owner}/${repo}`
+      core.info(
+        `Filtered from ${beforeFilterCount} to ${allIssues.length} issues for repository ${owner}/${repo}`
       )
     }
 
@@ -803,7 +814,8 @@ export function extractAllAlertUrlsFromIssue(issue) {
     /https:\/\/github\.com\/[^/]+\/[^/]+\/security\/dependabot\/\d+/g
   )
 
-  const urls = Array.from(urlMatches, (match) => match[0])
+  // Deduplicate URLs in case the same URL appears multiple times
+  const urls = [...new Set(Array.from(urlMatches, (match) => match[0]))]
 
   if (urls.length > 0) {
     core.debug(

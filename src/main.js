@@ -140,7 +140,9 @@ export async function run() {
     )
 
     // Fetch all existing Dependabot issues once (more efficient than N individual queries)
-    core.info('Fetching existing Dependabot issues from Jira...')
+    core.info(
+      `Fetching existing Dependabot issues from Jira (project: ${config.jira.projectKey}, labels: ${config.jira.labels || '(none)'}, repo: ${owner}/${repo})...`
+    )
     const existingIssues = await findDependabotIssues(
       jiraClient,
       config.jira.projectKey,
@@ -149,6 +151,19 @@ export async function run() {
       owner, // Filter by current repository
       repo
     )
+    core.info(`Found ${existingIssues.length} existing Dependabot issues`)
+
+    // Log details about what we found for debugging
+    if (existingIssues.length > 0) {
+      core.debug('Existing issues:')
+      for (const issue of existingIssues) {
+        const urls = extractAllAlertUrlsFromIssue(issue)
+        const ghsaId = extractGhsaIdFromIssue(issue)
+        core.debug(
+          `  ${issue.key}: ${urls.length} URL(s), GHSA: ${ghsaId || '(none)'}`
+        )
+      }
+    }
 
     // Build lookup maps:
     // 1. alertUrl -> Jira issue (for matching by URL)
@@ -180,6 +195,20 @@ export async function run() {
       `Built lookup maps: ${issueMap.size} URL mappings, ${ghsaMap.size} GHSA mappings from ${existingIssues.length} Jira issues`
     )
 
+    // Log the maps for debugging duplicate issues
+    if (issueMap.size > 0) {
+      core.debug('URL → Issue mappings:')
+      for (const [url, issue] of issueMap) {
+        core.debug(`  ${url} → ${issue.key}`)
+      }
+    }
+    if (ghsaMap.size > 0) {
+      core.debug('GHSA → Issue mappings:')
+      for (const [ghsaId, issue] of ghsaMap) {
+        core.debug(`  ${ghsaId} → ${issue.key}`)
+      }
+    }
+
     let issuesCreated = 0
     let issuesUpdated = 0
     let issuesReopened = 0
@@ -194,9 +223,17 @@ export async function run() {
         processedAlerts.push(parsedAlert)
 
         core.info(`Processing alert #${parsedAlert.id}: ${parsedAlert.title}`)
+        core.debug(
+          `  Alert URL: ${parsedAlert.url}, GHSA: ${parsedAlert.ghsaId || '(none)'}`
+        )
 
         // Check if issue already exists using in-memory lookup by URL
         const existingIssue = issueMap.get(parsedAlert.url)
+        if (existingIssue) {
+          core.debug(`  ✓ Found existing issue by URL: ${existingIssue.key}`)
+        } else {
+          core.debug(`  ✗ No existing issue found by URL`)
+        }
 
         if (existingIssue) {
           if (config.behavior.updateExisting) {
@@ -227,12 +264,17 @@ export async function run() {
           // All Dependabot alerts have a GHSA ID, so we only need to check that
           let ghsaIssue = null
           if (parsedAlert.ghsaId) {
+            core.debug(`  Checking GHSA map for: ${parsedAlert.ghsaId}`)
             ghsaIssue = ghsaMap.get(parsedAlert.ghsaId)
             if (ghsaIssue) {
               core.info(
-                `Found existing GHSA issue ${ghsaIssue.key} for ${parsedAlert.ghsaId} (in-memory lookup)`
+                `  ✓ Found existing GHSA issue ${ghsaIssue.key} for ${parsedAlert.ghsaId} (in-memory lookup)`
               )
+            } else {
+              core.debug(`  ✗ No existing issue found for GHSA ${parsedAlert.ghsaId}`)
             }
+          } else {
+            core.debug(`  No GHSA ID for this alert, will create new issue`)
           }
 
           if (ghsaIssue) {
@@ -265,6 +307,12 @@ export async function run() {
             if (updateResult.reopened) {
               issuesReopened++
             }
+
+            // Add this URL to the issueMap so future runs can find it by URL
+            issueMap.set(parsedAlert.url, ghsaIssue)
+            core.debug(
+              `Added ${parsedAlert.url} to issueMap pointing to ${ghsaIssue.key}`
+            )
           } else {
             // No existing issue for this GHSA - create new issue
             const newIssue = await createJiraIssue(

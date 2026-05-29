@@ -808,6 +808,83 @@ describe('Dependabot Jira Sync', () => {
     expect(mockCore.setOutput).toHaveBeenCalledWith('issues-created', '0')
   })
 
+  it('should add appended URL to issueMap to prevent duplicates on next run', async () => {
+    // Scenario: First alert creates issue, second alert with same GHSA appends URL
+    // We need to ensure the appended URL is added to issueMap so next run finds it
+    const alert1 = { number: 1, state: 'open' }
+    const alert2 = { number: 2, state: 'open' }
+    const parsedAlert1 = {
+      id: 1,
+      severity: 'high',
+      url: 'https://github.com/test-owner/test-repo/security/dependabot/1',
+      ghsaId: 'GHSA-xxxx-yyyy-zzzz'
+    }
+    const parsedAlert2 = {
+      id: 2,
+      severity: 'high',
+      url: 'https://github.com/test-owner/test-repo/security/dependabot/2',
+      ghsaId: 'GHSA-xxxx-yyyy-zzzz' // Same GHSA as alert1
+    }
+
+    // Existing issue only has first alert URL
+    const existingIssue = {
+      key: 'TEST-300',
+      fields: {
+        description: {
+          type: 'doc',
+          content: []
+        }
+      }
+    }
+
+    mockGithub.getDependabotAlerts.mockResolvedValue([alert1, alert2])
+    mockGithub.parseAlert
+      .mockReturnValueOnce(parsedAlert1)
+      .mockReturnValueOnce(parsedAlert2)
+    mockJira.findDependabotIssues.mockResolvedValue([existingIssue])
+    // First call: existing issue only has alert1 URL
+    // After append, it would have both, but we don't re-fetch in the same run
+    mockJira.extractAllAlertUrlsFromIssue.mockReturnValue([
+      'https://github.com/test-owner/test-repo/security/dependabot/1'
+    ])
+    mockJira.extractGhsaIdFromIssue.mockReturnValue('GHSA-xxxx-yyyy-zzzz')
+    mockJira.appendAlertUrlToIssue.mockResolvedValue({ updated: true })
+
+    await run()
+
+    // Should NOT create any new issues (both alerts use the same GHSA issue)
+    expect(mockJira.createJiraIssue).not.toHaveBeenCalled()
+
+    // First alert should be found by URL and synced
+    expect(mockJira.syncJiraIssueStatus).toHaveBeenCalledWith(
+      expect.any(Object),
+      'TEST-300',
+      parsedAlert1,
+      false,
+      'Reopen'
+    )
+
+    // Second alert should append URL (not found by URL, but found by GHSA)
+    expect(mockJira.appendAlertUrlToIssue).toHaveBeenCalledWith(
+      expect.any(Object),
+      'TEST-300',
+      'https://github.com/test-owner/test-repo/security/dependabot/2',
+      false
+    )
+
+    // Second alert should also sync status
+    expect(mockJira.syncJiraIssueStatus).toHaveBeenCalledWith(
+      expect.any(Object),
+      'TEST-300',
+      parsedAlert2,
+      false,
+      'Reopen'
+    )
+
+    expect(mockCore.setOutput).toHaveBeenCalledWith('issues-created', '0')
+    expect(mockCore.setOutput).toHaveBeenCalledWith('alerts-grouped-by-ghsa', '1')
+  })
+
   it('validates config inputs and fails fast on invalid values', async () => {
     mockCore.getInput.mockImplementation((name, options) => {
       const inputs = {

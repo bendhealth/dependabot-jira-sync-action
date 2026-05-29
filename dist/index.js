@@ -72115,12 +72115,23 @@ async function findDependabotIssues(
     // This is done post-fetch to avoid JQL injection through owner/repo names
     if (filterByRepo) {
       const repoUrlPattern = `https://github.com/${owner}/${repo}/security/dependabot/`;
+      debug(
+        `Filtering ${allIssues.length} issues by repository URL pattern: ${repoUrlPattern}`
+      );
+
+      const beforeFilterCount = allIssues.length;
       allIssues = allIssues.filter((issue) => {
         const urls = extractAllAlertUrlsFromIssue(issue);
-        return urls.some((url) => url.startsWith(repoUrlPattern))
+        const matches = urls.some((url) => url.startsWith(repoUrlPattern));
+        if (!matches && urls.length > 0) {
+          debug(
+            `Issue ${issue.key} excluded - URLs don't match pattern: ${urls.join(', ')}`
+          );
+        }
+        return matches
       });
-      debug(
-        `Filtered to ${allIssues.length} issues for repository ${owner}/${repo}`
+      info(
+        `Filtered from ${beforeFilterCount} to ${allIssues.length} issues for repository ${owner}/${repo}`
       );
     }
 
@@ -72155,7 +72166,8 @@ function extractAllAlertUrlsFromIssue(issue) {
     /https:\/\/github\.com\/[^/]+\/[^/]+\/security\/dependabot\/\d+/g
   );
 
-  const urls = Array.from(urlMatches, (match) => match[0]);
+  // Deduplicate URLs in case the same URL appears multiple times
+  const urls = [...new Set(Array.from(urlMatches, (match) => match[0]))];
 
   if (urls.length > 0) {
     debug(
@@ -72587,7 +72599,9 @@ async function run() {
     );
 
     // Fetch all existing Dependabot issues once (more efficient than N individual queries)
-    info('Fetching existing Dependabot issues from Jira...');
+    info(
+      `Fetching existing Dependabot issues from Jira (project: ${config.jira.projectKey}, labels: ${config.jira.labels || '(none)'}, repo: ${owner}/${repo})...`
+    );
     const existingIssues = await findDependabotIssues(
       jiraClient,
       config.jira.projectKey,
@@ -72596,6 +72610,19 @@ async function run() {
       owner, // Filter by current repository
       repo
     );
+    info(`Found ${existingIssues.length} existing Dependabot issues`);
+
+    // Log details about what we found for debugging
+    if (existingIssues.length > 0) {
+      debug('Existing issues:');
+      for (const issue of existingIssues) {
+        const urls = extractAllAlertUrlsFromIssue(issue);
+        const ghsaId = extractGhsaIdFromIssue(issue);
+        debug(
+          `  ${issue.key}: ${urls.length} URL(s), GHSA: ${ghsaId || '(none)'}`
+        );
+      }
+    }
 
     // Build lookup maps:
     // 1. alertUrl -> Jira issue (for matching by URL)
@@ -72627,6 +72654,20 @@ async function run() {
       `Built lookup maps: ${issueMap.size} URL mappings, ${ghsaMap.size} GHSA mappings from ${existingIssues.length} Jira issues`
     );
 
+    // Log the maps for debugging duplicate issues
+    if (issueMap.size > 0) {
+      debug('URL → Issue mappings:');
+      for (const [url, issue] of issueMap) {
+        debug(`  ${url} → ${issue.key}`);
+      }
+    }
+    if (ghsaMap.size > 0) {
+      debug('GHSA → Issue mappings:');
+      for (const [ghsaId, issue] of ghsaMap) {
+        debug(`  ${ghsaId} → ${issue.key}`);
+      }
+    }
+
     let issuesCreated = 0;
     let issuesUpdated = 0;
     let issuesReopened = 0;
@@ -72641,9 +72682,17 @@ async function run() {
         processedAlerts.push(parsedAlert);
 
         info(`Processing alert #${parsedAlert.id}: ${parsedAlert.title}`);
+        debug(
+          `  Alert URL: ${parsedAlert.url}, GHSA: ${parsedAlert.ghsaId || '(none)'}`
+        );
 
         // Check if issue already exists using in-memory lookup by URL
         const existingIssue = issueMap.get(parsedAlert.url);
+        if (existingIssue) {
+          debug(`  ✓ Found existing issue by URL: ${existingIssue.key}`);
+        } else {
+          debug(`  ✗ No existing issue found by URL`);
+        }
 
         if (existingIssue) {
           if (config.behavior.updateExisting) {
@@ -72674,12 +72723,19 @@ async function run() {
           // All Dependabot alerts have a GHSA ID, so we only need to check that
           let ghsaIssue = null;
           if (parsedAlert.ghsaId) {
+            debug(`  Checking GHSA map for: ${parsedAlert.ghsaId}`);
             ghsaIssue = ghsaMap.get(parsedAlert.ghsaId);
             if (ghsaIssue) {
               info(
-                `Found existing GHSA issue ${ghsaIssue.key} for ${parsedAlert.ghsaId} (in-memory lookup)`
+                `  ✓ Found existing GHSA issue ${ghsaIssue.key} for ${parsedAlert.ghsaId} (in-memory lookup)`
+              );
+            } else {
+              debug(
+                `  ✗ No existing issue found for GHSA ${parsedAlert.ghsaId}`
               );
             }
+          } else {
+            debug(`  No GHSA ID for this alert, will create new issue`);
           }
 
           if (ghsaIssue) {
@@ -72712,6 +72768,12 @@ async function run() {
             if (updateResult.reopened) {
               issuesReopened++;
             }
+
+            // Add this URL to the issueMap so future runs can find it by URL
+            issueMap.set(parsedAlert.url, ghsaIssue);
+            debug(
+              `Added ${parsedAlert.url} to issueMap pointing to ${ghsaIssue.key}`
+            );
           } else {
             // No existing issue for this GHSA - create new issue
             const newIssue = await createJiraIssue(
