@@ -737,7 +737,7 @@ export async function findDependabotIssues(
         `Fetching issues: startAt=${startAt}, maxResults=${maxResults}`
       )
 
-      const response = await jiraClient.get('/search/jql', {
+      const response = await jiraClient.get('/search', {
         params: {
           jql,
           fields: 'key,summary,description,status,resolution',
