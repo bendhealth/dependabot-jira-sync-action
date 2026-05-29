@@ -72089,7 +72089,7 @@ async function findDependabotIssues(
         `Fetching issues: startAt=${startAt}, maxResults=${maxResults}`
       );
 
-      const response = await jiraClient.get('/search', {
+      const response = await jiraClient.get('/search/jql', {
         params: {
           jql,
           fields: 'key,summary,description,status,resolution',
@@ -72100,6 +72100,12 @@ async function findDependabotIssues(
 
       const issues = response.data.issues || [];
       total = response.data.total || 0;
+
+      // Debug: log the response structure to diagnose pagination issue
+      debug(`Response data keys: ${Object.keys(response.data).join(', ')}`);
+      debug(`Response.data.total: ${response.data.total}`);
+      debug(`Response.data.maxResults: ${response.data.maxResults}`);
+      debug(`Response.data.startAt: ${response.data.startAt}`);
 
       allIssues = allIssues.concat(issues);
       startAt += issues.length;

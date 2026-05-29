@@ -616,7 +616,7 @@ describe('Jira API Functions', () => {
         true // onlyOpen = true
       )
 
-      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/search', {
+      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/search/jql', {
         params: {
           jql: 'project = "SEC" AND labels = "dependabot" AND resolution IS EMPTY',
           fields: 'key,summary,description,status,resolution',
@@ -670,7 +670,7 @@ describe('Jira API Functions', () => {
         false // onlyOpen = false
       )
 
-      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/search', {
+      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/search/jql', {
         params: {
           jql: 'project = "SEC" AND labels = "dependabot"',
           fields: 'key,summary,description,status,resolution',
@@ -714,7 +714,7 @@ describe('Jira API Functions', () => {
         true
       )
 
-      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/search', {
+      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/search/jql', {
         params: {
           jql: 'project = "SEC" AND labels = "dependabot" AND labels = "security" AND labels = "automated" AND resolution IS EMPTY',
           fields: 'key,summary,description,status,resolution',
@@ -737,7 +737,7 @@ describe('Jira API Functions', () => {
         true
       )
 
-      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/search', {
+      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/search/jql', {
         params: {
           jql: 'project = "SEC" AND labels = "dependabot" AND labels = "security" AND resolution IS EMPTY',
           fields: 'key,summary,description,status,resolution',
@@ -752,7 +752,7 @@ describe('Jira API Functions', () => {
 
       await findDependabotIssues(mockAxiosInstance, 'SEC', '', true)
 
-      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/search', {
+      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/search/jql', {
         params: {
           jql: 'project = "SEC" AND resolution IS EMPTY',
           fields: 'key,summary,description,status,resolution',
@@ -878,7 +878,7 @@ describe('Jira API Functions', () => {
       )
 
       // Should NOT include repository URL pattern in JQL (post-fetch filtering for security)
-      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/search', {
+      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/search/jql', {
         params: {
           jql: 'project = "SEC" AND labels = "dependabot" AND resolution IS EMPTY',
           fields: 'key,summary,description,status,resolution',
@@ -1219,7 +1219,7 @@ describe('Security Tests', () => {
 
       // Check that the JQL was called with escaped label
       expect(jiraClient.get).toHaveBeenCalledWith(
-        '/search',
+        '/search/jql',
         expect.objectContaining({
           params: expect.objectContaining({
             jql: expect.stringContaining(
@@ -1318,7 +1318,7 @@ describe('Security Tests', () => {
       // Should filter results post-fetch, not inject into JQL
       // JQL should NOT contain the owner/repo pattern
       expect(jiraClient.get).toHaveBeenCalledWith(
-        '/search',
+        '/search/jql',
         expect.objectContaining({
           params: expect.objectContaining({
             jql: expect.not.stringContaining(maliciousOwner)
